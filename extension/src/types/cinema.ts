@@ -1,0 +1,112 @@
+/**
+ * Cinema data types for the Movie Ticket Discovery Assistant
+ */
+
+export interface Movie {
+  id: string;
+  title: string;
+  posterUrl?: string;
+  synopsis?: string;
+  duration?: number; // minutes
+  releaseDate?: string;
+  rating?: string; // e.g., "PG-13", "R"
+  genres?: string[];
+  director?: string;
+  cast?: string[];
+  language?: string;
+  subtitleLanguages?: string[];
+}
+
+export interface Cinema {
+  id: string;
+  name: string;
+  location: string;
+  address?: string;
+  phone?: string;
+  website?: string;
+  halls?: Hall[];
+  amenities?: string[];
+  coordinates?: {
+    lat: number;
+    lng: number;
+  };
+}
+
+export interface Hall {
+  id: string;
+  name: string;
+  screenType: ScreenType;
+  capacity: number;
+  seatingLayout?: string;
+}
+
+export type ScreenType = 'standard' | 'imax' | 'dolby_atmos' | '4dx' | '3d' | 'premium' | 'laser';
+
+export interface Showtime {
+  id: string;
+  movie: Movie;
+  cinema: Cinema;
+  hall: Hall;
+
+  date: string; // ISO date
+  time: string; // HH:mm format
+
+  screenType: ScreenType;
+  price: number;
+  currency: string;
+
+  availableSeats: number;
+  totalSeats: number;
+
+  // For booking
+  bookingUrl: string;
+}
+
+export interface ShowtimeFilters {
+  date?: string;
+  timeRange?: {
+    start?: string;
+    end?: string;
+  };
+  cinemaId?: string;
+  screenType?: ScreenType;
+  maxPrice?: number;
+  minAvailableSeats?: number;
+}
+
+/**
+ * Convert time string to comparable value
+ */
+export function timeToNumber(time: string): number {
+  const [hours, minutes] = time.split(':').map(Number);
+  return hours * 60 + minutes;
+}
+
+/**
+ * Check if a showtime matches filters
+ */
+export function matchesFilters(showtime: Showtime, filters: ShowtimeFilters): boolean {
+  if (filters.date && showtime.date !== filters.date) return false;
+
+  if (filters.timeRange) {
+    const showtimeMinutes = timeToNumber(showtime.time);
+    if (filters.timeRange.start) {
+      const startMinutes = timeToNumber(filters.timeRange.start);
+      if (showtimeMinutes < startMinutes) return false;
+    }
+    if (filters.timeRange.end) {
+      const endMinutes = timeToNumber(filters.timeRange.end);
+      if (showtimeMinutes > endMinutes) return false;
+    }
+  }
+
+  if (filters.cinemaId && showtime.cinema.id !== filters.cinemaId) return false;
+
+  if (filters.screenType && showtime.screenType !== filters.screenType) return false;
+
+  if (filters.maxPrice && showtime.price > filters.maxPrice) return false;
+
+  if (filters.minAvailableSeats && showtime.availableSeats < filters.minAvailableSeats) return false;
+
+  return true;
+}

@@ -1,0 +1,97 @@
+/**
+ * Demo Cinema Adapter
+ *
+ * Returns realistic, deterministic sample data so the full discovery pipeline
+ * (search → showtimes → seat-map → block detection → ranking) can be exercised
+ * and demoed without a live cinema backend.
+ *
+ * This is deliberately separate from real cinema adapters and clearly marked as
+ * simulated data. It is registered to demonstrate behaviour; a real integration
+ * (e.g. Star Cineplex) replaces it once a genuinely accessible data source exists.
+ */
+import { CinemaAdapter, BookingResult } from '../base-adapter';
+import { Movie, Showtime, ShowtimeFilters, ScreenType } from '../../types/cinema';
+import { SeatMap } from '../../types/seat';
+import { generateDemoSeatMap } from './seats';
+
+interface DemoShow {
+  cinema: string;
+  location: string;
+  hall: string;
+  screenType: ScreenType;
+  time: string;          // HH:mm
+  price: number;
+}
+
+const DEMO_SHOWS: DemoShow[] = [
+  { cinema: 'Demo Cineplex', location: 'Bashundhara', hall: 'Hall 1', screenType: 'imax', time: '19:30', price: 800 },
+  { cinema: 'Demo Cineplex', location: 'Bashundhara', hall: 'Hall 2', screenType: 'standard', time: '14:00', price: 450 },
+  { cinema: 'Demo Cinema City', location: 'Jamuna Future Park', hall: 'Screen 4', screenType: 'dolby_atmos', time: '20:15', price: 650 },
+  { cinema: 'Demo Cinema City', location: 'Jamuna Future Park', hall: 'Screen 2', screenType: '3d', time: '18:00', price: 550 },
+  { cinema: 'Demo Silver Screen', location: 'Police Plaza', hall: 'Premium Hall', screenType: '4dx', time: '21:00', price: 950 },
+  { cinema: 'Demo Silver Screen', location: 'Police Plaza', hall: 'Standard 3', screenType: 'standard', time: '13:15', price: 400 },
+];
+
+export class DemoAdapter extends CinemaAdapter {
+  readonly id = 'demo-cineplex';
+  readonly name = 'Demo Cineplex (simulated)';
+  readonly supportedDomains: string[] = []; // never matches real URLs
+
+  /**
+   * Return a single normalized movie matching the query.
+   */
+  async searchMovies(query: string): Promise<Movie[]> {
+    return [
+      {
+        id: 'demo-movie',
+        title: query,
+        language: 'English',
+        duration: 150,
+      },
+    ];
+  }
+
+  /**
+   * Generate showtimes for the demo movie across the demo halls.
+   */
+  async getShowtimes(movie: Movie, _filters?: ShowtimeFilters): Promise<Showtime[]> {
+    return DEMO_SHOWS.map((show, i) => ({
+      id: `demo-show-${i}`,
+      movie,
+      cinema: {
+        id: this.id,
+        name: show.cinema,
+        location: show.location,
+        halls: [{ id: show.hall, name: show.hall, screenType: show.screenType, capacity: 50 }],
+      },
+      hall: { id: show.hall, name: show.hall, screenType: show.screenType, capacity: 50 },
+      date: '2026-09-10',
+      time: show.time,
+      screenType: show.screenType,
+      price: show.price,
+      currency: 'BDT',
+      availableSeats: 0,
+      totalSeats: 50,
+      bookingUrl: '',
+    }));
+  }
+
+  /**
+   * Deterministic seat map for the showtime.
+   */
+  async getSeatMap(showtime: Showtime): Promise<SeatMap> {
+    return generateDemoSeatMap(showtime.id);
+  }
+
+  async selectSeats(_showtime: Showtime, _seatIds: string[]): Promise<BookingResult> {
+    return { success: true };
+  }
+
+  async addToCart(_showtime: Showtime): Promise<BookingResult> {
+    return { success: true };
+  }
+
+  async checkout(_showtime: Showtime): Promise<BookingResult> {
+    return { success: true };
+  }
+}

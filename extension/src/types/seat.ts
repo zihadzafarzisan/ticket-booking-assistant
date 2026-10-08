@@ -1,0 +1,121 @@
+/**
+ * Seat data types for the Movie Ticket Discovery Assistant
+ */
+
+export type SeatStatus =
+  | 'available'
+  | 'occupied'
+  | 'blocked'
+  | 'selected'
+  | 'wheelchair'
+  | 'couple'
+  | 'unknown';
+
+export type SeatCategory = 'standard' | 'vip' | 'premium' | 'couple' | 'wheelchair' | 'regular';
+
+export interface Seat {
+  id: string;
+  row: string;
+  number: number;
+  label: string;
+
+  status: SeatStatus;
+  category?: SeatCategory;
+  price?: number;
+
+  // Visual coordinates (if available from seat map)
+  x?: number;
+  y?: number;
+
+  // Pre-computed adjacencies for navigation
+  adjacentSeatIds?: string[];
+
+  // Section information
+  section?: string;
+  aisle?: boolean;
+}
+
+export interface SeatBlock {
+  id: string;
+  row: string;
+  section?: string;
+
+  seats: Seat[];
+  startSeat: string;
+  endSeat: string;
+
+  capacity: number;
+  availableCount: number;
+
+  // Score for ranking (0-1)
+  centerScore: number;
+
+  // Whether this block can accommodate the requested seat count
+  meetsRequirement: boolean;
+}
+
+export interface SeatMap {
+  cinemaId: string;
+  movieId: string;
+  showtimeId: string;
+
+  rows: Map<string, Seat[]>;
+  blocks: SeatBlock[];
+
+  // Metadata
+  hallName: string;
+  screenType: string;
+  totalSeats: number;
+  availableSeats: number;
+
+  // Timestamp for cache validation
+  fetchedAt: Date;
+}
+
+export interface SeatSelection {
+  showtimeId: string;
+  seatIds: string[];
+  price: number;
+  timestamp: Date;
+}
+
+/**
+ * Create a seat block from a contiguous sequence of seats
+ */
+export function createSeatBlock(
+  row: string,
+  seats: Seat[],
+  section?: string
+): SeatBlock {
+  const sortedSeats = [...seats].sort((a, b) => a.number - b.number);
+  const capacity = sortedSeats.length;
+  const availableCount = sortedSeats.filter(s => s.status === 'available').length;
+
+  // Calculate center score (how centered is this block in the row)
+  const rowSeatCount = sortedSeats.length;
+  const centerPosition = (rowSeatCount + 1) / 2;
+  const blockCenter = (sortedSeats[0].number + sortedSeats[capacity - 1].number) / 2;
+  const centerScore = 1 - Math.abs(centerPosition - blockCenter) / rowSeatCount;
+
+  return {
+    id: `${row}-${sortedSeats[0].number}-${sortedSeats[capacity - 1].number}`,
+    row,
+    section,
+    seats: sortedSeats,
+    startSeat: sortedSeats[0].label,
+    endSeat: sortedSeats[capacity - 1].label,
+    capacity,
+    availableCount,
+    centerScore,
+    meetsRequirement: false, // Will be set by the detection algorithm
+  };
+}
+
+/**
+ * Convert a seat map to a flat array
+ */
+export function seatMapToArray(seatMap: SeatMap): Seat[] {
+  const allSeats: Seat[] = [];
+  seatMap.rows.forEach(seats => allSeats.push(...seats));
+  return allSeats;
+}

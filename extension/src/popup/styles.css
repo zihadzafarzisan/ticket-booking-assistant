@@ -1,0 +1,199 @@
+/* Popup styles for Movie Ticket Discovery Assistant */
+
+:root {
+  color-scheme: light dark;
+  --bg: #fafaf9;
+  --surface: #ffffff;
+  --border: #e7e5e4;
+  --text: #1c1917;
+  --text-muted: #57534e;
+  --accent: #dc2626;
+  --accent-hover: #b91c1c;
+  --accent-soft: #fee2e2;
+  --success: #16a34a;
+  --success-soft: #dcfce7;
+  --radius: 0.75rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0c0a09;
+    --surface: #1c1917;
+    --border: #292524;
+    --text: #fafaf9;
+    --text-muted: #d6d3d1;
+    --accent: #ef4444;
+    --accent-hover: #dc2626;
+    --accent-soft: #450a0a;
+    --success: #22c55e;
+    --success-soft: #052e16;
+  }
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  width: 380px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.app { min-height: 400px; display: flex; flex-direction: column; }
+
+.app-header {
+  padding: 16px 16px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.app-header h1 {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.tagline { color: var(--text-muted); font-size: 12px; }
+
+main { flex: 1; padding: 16px; overflow-y: auto; }
+
+.app-footer {
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+/* Search form */
+.search-form { display: flex; flex-direction: column; gap: 12px; }
+
+.form-group { display: flex; flex-direction: column; gap: 4px; }
+
+.form-group label {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+input, select {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 14px;
+  color: var(--text);
+  font-family: inherit;
+}
+
+input:focus, select:focus { outline: none; border-color: var(--accent); }
+
+.advanced-toggle {
+  background: none; border: none;
+  color: var(--accent);
+  font-size: 12px; font-weight: 600;
+  cursor: pointer; text-align: left; padding: 0;
+}
+
+.advanced-filters { display: grid; gap: 10px; }
+
+/* Buttons */
+button.primary {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+button.primary:hover { background: var(--accent-hover); }
+button.primary:disabled { opacity: 0.5; cursor: default; }
+
+button.secondary {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+/* Loading */
+.loading { text-align: center; padding: 32px 0; }
+.spinner {
+  width: 28px; height: 28px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin: 0 auto 16px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.seats-requested { color: var(--text-muted); font-size: 13px; margin-top: 4px; }
+.progress-list { list-style: none; margin-top: 16px; text-align: left; display: grid; gap: 8px; }
+.progress-item { color: var(--text-muted); font-size: 13px; padding-left: 20px; position: relative; }
+.progress-item::before { content: '•'; color: var(--accent); position: absolute; left: 4px; }
+
+/* Error */
+.error-state { text-align: center; padding: 32px 0; display: grid; gap: 16px; }
+.error-state p { color: var(--text); }
+
+/* Results */
+.results { display: flex; flex-direction: column; gap: 16px; }
+.results-header { display: flex; justify-content: space-between; align-items: center; }
+.results-header h2 { font-size: 16px; }
+.results-count { color: var(--text-muted); font-size: 12px; }
+.sort-row { display: flex; align-items: center; gap: 6px; }
+.sort-row label { font-size: 12px; color: var(--text-muted); }
+.sort-row select { font-size: 13px; padding: 4px 6px; }
+.results-grid { display: grid; gap: 12px; }
+
+/* Result card */
+.result-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px;
+  position: relative;
+}
+.result-card.is-best { border: 2px solid var(--accent); }
+.best-badge {
+  position: absolute; top: -10px; right: 12px;
+  background: var(--accent); color: #fff;
+  padding: 2px 10px; border-radius: 12px;
+  font-size: 11px; font-weight: 700;
+}
+.result-header { display: flex; justify-content: space-between; align-items: start; gap: 8px; }
+.movie-title { font-size: 15px; }
+.cinema-name { color: var(--text-muted); font-size: 12px; }
+.price-tag { font-weight: 700; color: var(--accent); text-align: right; }
+.per-seat { font-size: 11px; color: var(--text-muted); font-weight: 400; }
+.result-meta {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  background: var(--bg);
+  padding: 10px;
+  border-radius: 8px;
+  margin: 10px 0;
+}
+.result-meta dt { font-size: 10px; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.03em; }
+.result-meta dd { font-size: 13px; font-weight: 500; }
+.seat-block-info {
+  background: var(--success-soft);
+  color: var(--success);
+  padding: 10px;
+  border-radius: 8px;
+  display: flex; flex-direction: column;
+  font-size: 13px;
+}
+.seat-block-info strong { font-size: 14px; }
+.reasoning { color: var(--text-muted); font-size: 12px; font-style: italic; margin: 8px 0; }
+.result-actions { display: flex; justify-content: space-between; align-items: center; }
+.result-actions .primary { padding: 8px 12px; font-size: 13px; }
+.score { font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
