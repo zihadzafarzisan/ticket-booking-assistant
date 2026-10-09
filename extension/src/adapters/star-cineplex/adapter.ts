@@ -185,7 +185,10 @@ export class StarCineplexAdapter extends CinemaAdapter {
       const venues = await this.getVenues();
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 8000);
-      const res = await fetch(`${INVENTORY_API}/shows?orgId=${ORG_ID}`, { signal: controller.signal });
+      const res = await fetch(`${INVENTORY_API}/shows?orgId=${ORG_ID}&_t=${Date.now()}`, {
+        signal: controller.signal,
+        cache: 'no-store',
+      });
       clearTimeout(timeoutId);
 
       if (!res.ok) {
@@ -494,7 +497,9 @@ export class StarCineplexAdapter extends CinemaAdapter {
     remainingSeats: number;
   }> {
     try {
-      const res = await fetch(`${INVENTORY_API}/shows?orgId=${ORG_ID}`);
+      const res = await fetch(`${INVENTORY_API}/shows?orgId=${ORG_ID}&_t=${Date.now()}`, {
+        cache: 'no-store',
+      });
       if (res.ok) {
         const shows = (await res.json()) as ApiShow[];
         const show = shows.find(s => s.id === showtimeId);

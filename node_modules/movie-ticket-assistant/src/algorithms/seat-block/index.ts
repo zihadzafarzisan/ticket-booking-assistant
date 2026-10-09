@@ -6,6 +6,9 @@
  */
 
 import { Seat, SeatBlock, SeatMap, SeatStatus, createSeatBlock } from '../../types/seat';
+import { isRowAllowed, DEFAULT_ALLOWED_ROWS, normalizeRowLabel } from '../../utils/date';
+
+export { isRowAllowed, DEFAULT_ALLOWED_ROWS, normalizeRowLabel };
 
 /**
  * Configuration for block detection
@@ -13,6 +16,9 @@ import { Seat, SeatBlock, SeatMap, SeatStatus, createSeatBlock } from '../../typ
 export interface BlockDetectionConfig {
   /** Minimum number of seats required */
   requiredSeats: number;
+
+  /** Allowed row labels to search (e.g. ['B', 'C', 'D', 'E', 'F']) */
+  allowedRows?: string[];
 
   /** Whether to consider seat categories (VIP, couple, etc.) */
   respectCategories?: boolean;
@@ -39,6 +45,13 @@ export function detectSeatBlocks(
 
   // Process each row
   seatMap.rows.forEach((seats, rowLabel) => {
+    // If allowedRows is specified, only process matching rows (e.g. B, C, D, E, F)
+    if (config.allowedRows && config.allowedRows.length > 0) {
+      if (!isRowAllowed(rowLabel, config.allowedRows)) {
+        return;
+      }
+    }
+
     const rowBlocks = detectRowBlocks(seats, rowLabel, config);
     allBlocks.push(...rowBlocks);
   });

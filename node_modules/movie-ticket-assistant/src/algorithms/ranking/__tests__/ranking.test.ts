@@ -94,6 +94,41 @@ describe('scoreResult', () => {
     expect(result.reasoning).toContain('center');
     expect(result.reasoning).toContain('IMAX');
   });
+
+  it('rewards matching multiple preferred time slots (e.g. afternoon and evening)', () => {
+    const afternoonShow = createShowtime({ time: '14:30' });
+    const eveningShow = createShowtime({ time: '19:00' });
+    const morningShow = createShowtime({ time: '10:00' });
+    const block = createBlock(4, 0.7);
+
+    const criteria = { preferredTimes: ['afternoon', 'evening'] };
+
+    const resAfternoon = scoreResult(afternoonShow, block, DEFAULT_WEIGHTS, criteria);
+    const resEvening = scoreResult(eveningShow, block, DEFAULT_WEIGHTS, criteria);
+    const resMorning = scoreResult(morningShow, block, DEFAULT_WEIGHTS, criteria);
+
+    expect(resAfternoon.showtimeScore).toBe(1.0);
+    expect(resEvening.showtimeScore).toBe(1.0);
+    expect(resMorning.showtimeScore).toBe(0.3);
+  });
+
+  it('penalizes blocks not in allowedRows to 0 seatQualityScore', () => {
+    const showtime = createShowtime({});
+    const blockF = createBlock(4, 0.8);
+    const blockL: SeatBlock = {
+      ...createBlock(4, 0.8),
+      id: 'L1-L4',
+      row: 'L',
+    };
+
+    const criteria = { allowedRows: ['B', 'C', 'D', 'E', 'F'] };
+
+    const resF = scoreResult(showtime, blockF, DEFAULT_WEIGHTS, criteria);
+    const resL = scoreResult(showtime, blockL, DEFAULT_WEIGHTS, criteria);
+
+    expect(resF.seatQualityScore).toBeGreaterThan(0.6);
+    expect(resL.seatQualityScore).toBe(0);
+  });
 });
 
 describe('rankResults', () => {

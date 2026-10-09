@@ -7,7 +7,9 @@
     "storage",
     "tabs",
     "scripting",
-    "activeTab"
+    "activeTab",
+    "alarms",
+    "notifications"
   ],
   "host_permissions": [
     "https://*.starcineplex.com/*",

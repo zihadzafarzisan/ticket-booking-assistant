@@ -16,6 +16,9 @@ import {
 import { rankResults, RankingCriteria, RankingWeights } from '../algorithms/ranking/scorer';
 import { Showtime } from '../types/cinema';
 import { Seat, SeatBlock, SeatMap } from '../types/seat';
+import { SniperEngine } from '../services/sniper-engine';
+import { SniperConfig } from '../types/sniper';
+import { getTimeSlot, DEFAULT_ALLOWED_ROWS } from '../utils/date';
 
 export interface DiscoveryRequest {
   movieName: string;
@@ -63,6 +66,9 @@ const demoAdapter = new DemoAdapter();
 demoAdapter.config.priority = 1;
 adapterRegistry.register(demoAdapter);
 
+// Initialize background seat sniper engine
+const sniperEngine = new SniperEngine();
+
 /**
  * Main discovery orchestration
  */
@@ -109,7 +115,24 @@ async function runDiscovery(request: DiscoveryRequest): Promise<DiscoveryRespons
 
   // If Star Cineplex has matching showtimes, prioritize live cinema results
   const starShowtimes = allShowtimes.filter(s => s.cinema.id === starAdapter.id);
-  const targetShowtimes = starShowtimes.length > 0 ? starShowtimes : allShowtimes;
+  let targetShowtimes = starShowtimes.length > 0 ? starShowtimes : allShowtimes;
+
+  // Filter for showtimes that match preferred multiple time slots (e.g. afternoon, evening)
+  if (request.criteria?.preferredTimes && request.criteria.preferredTimes.length > 0) {
+    const timeMatches = targetShowtimes.filter(s =>
+      request.criteria!.preferredTimes!.includes(getTimeSlot(s.time))
+    );
+    if (timeMatches.length > 0) {
+      targetShowtimes = timeMatches;
+    }
+  } else if (request.criteria?.preferredTime && request.criteria.preferredTime !== 'any') {
+    const timeMatches = targetShowtimes.filter(s =>
+      getTimeSlot(s.time) === request.criteria!.preferredTime
+    );
+    if (timeMatches.length > 0) {
+      targetShowtimes = timeMatches;
+    }
+  }
 
   // Filter for showtimes that have at least the required seats available
   const availableShowtimes = targetShowtimes.filter(s => s.availableSeats >= request.requiredSeats);
@@ -137,10 +160,18 @@ async function runDiscovery(request: DiscoveryRequest): Promise<DiscoveryRespons
     seatMap: SeatMap;
   }>;
 
+  // Allowed rows: default strictly to B, C, D, E, F rows (excludes front row A and back rows L, N, etc.)
+  const allowedRows = request.criteria?.allowedRows && request.criteria.allowedRows.length > 0
+    ? request.criteria.allowedRows
+    : DEFAULT_ALLOWED_ROWS;
+
   // Step 4 & 5: Detect maximal continuous blocks and filter by requirement
   // Zero overlapping combinations: each maximal block is presented once
   const eligible = seatMapResults.flatMap(({ showtime, seatMap }) => {
-    const blocks = detectSeatBlocks(seatMap, { requiredSeats: request.requiredSeats });
+    const blocks = detectSeatBlocks(seatMap, {
+      requiredSeats: request.requiredSeats,
+      allowedRows,
+    });
     const eligibleBlocks = filterBlocksByRequirement(blocks, request.requiredSeats);
 
     return eligibleBlocks.map(block => ({ showtime, seatBlock: block }));
@@ -240,8 +271,84 @@ async function handleRecheckAndReserve(req: ReserveRequest): Promise<ReserveResp
   };
 }
 
+let currentDiscoveryId = 0;
+let activePopoutWindowId: number | null = null;
+
+/**
+ * Perform end-to-end background discovery and auto-reservation so execution
+ * completes reliably even if the user closes or clicks outside the popup.
+ */
+async function handleAutoDiscoverAndReserve(request: DiscoveryRequest): Promise<{
+  discovery: DiscoveryResponse;
+  reservation?: ReserveResponse;
+}> {
+  const opId = ++currentDiscoveryId;
+  const discovery = await runDiscovery(request);
+
+  // If a reset was requested while discovery was in flight, abort!
+  if (opId !== currentDiscoveryId) {
+    return {
+      discovery: {
+        results: [],
+        errors: [{ cinemaId: 'core', error: 'Discovery reset by user' }],
+        duration: 0,
+      },
+    };
+  }
+
+  if (discovery.results.length === 0) {
+    return { discovery };
+  }
+
+  const topResult = discovery.results[0];
+  let reservation: ReserveResponse | undefined;
+
+  try {
+    reservation = await handleRecheckAndReserve({
+      showtime: topResult.showtime,
+      seatBlock: topResult.seatBlock,
+      requiredSeats: request.requiredSeats,
+    });
+  } catch (reserveErr) {
+    console.warn('[Movie Assistant] Background auto-reserve error:', reserveErr);
+  }
+
+  if (opId !== currentDiscoveryId) {
+    return { discovery, reservation };
+  }
+
+  try {
+    await chrome.storage.local.set({
+      lastAutoBooked: {
+        result: topResult,
+        reservation,
+        timestamp: Date.now(),
+      },
+    });
+  } catch (storageErr) {
+    console.warn('[Movie Assistant] Storage save error:', storageErr);
+  }
+
+  return { discovery, reservation };
+}
+
 // Runtime message routing
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message.type === 'AUTO_DISCOVER_AND_RESERVE') {
+    handleAutoDiscoverAndReserve(message.request)
+      .then(sendResponse)
+      .catch(err => {
+        sendResponse({
+          discovery: {
+            results: [],
+            errors: [{ cinemaId: 'core', error: err.message }],
+            duration: 0,
+          },
+        });
+      });
+    return true;
+  }
+
   if (message.type === 'DISCOVER') {
     runDiscovery(message.request)
       .then(sendResponse)
@@ -293,7 +400,145 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     sendResponse({ adapters: statuses });
     return true;
   }
+
+  // Seat Drop Sniper message routing
+  if (message.type === 'START_SNIPER') {
+    sniperEngine
+      .start(message.config)
+      .then(state => {
+        if (typeof chrome !== 'undefined' && chrome.alarms) {
+          chrome.alarms.create('sniper-heartbeat', { periodInMinutes: 0.1 });
+        }
+        sendResponse({ success: true, state });
+      })
+      .catch(err => {
+        sendResponse({ success: false, error: err.message });
+      });
+    return true;
+  }
+
+  if (message.type === 'STOP_SNIPER') {
+    if (typeof chrome !== 'undefined' && chrome.alarms) {
+      chrome.alarms.clear('sniper-heartbeat');
+    }
+    const state = sniperEngine.stop(message.reason);
+    sendResponse({ success: true, state });
+    return true;
+  }
+
+  if (message.type === 'GET_SNIPER_STATE') {
+    sendResponse(sniperEngine.getState());
+    return true;
+  }
+
+  if (message.type === 'SNIPER_CHECK_NOW') {
+    sniperEngine
+      .checkNow()
+      .then(result => sendResponse(result))
+      .catch(err => sendResponse({ found: false, error: err.message }));
+    return true;
+  }
+
+  if (message.type === 'SNIPER_HEARTBEAT') {
+    const state = sniperEngine.getState();
+    if (state.config?.active && state.status === 'refreshing') {
+      const elapsed = Date.now() - (state.lastCheckTime || 0);
+      const threshold = (state.config.intervalSeconds || 2.5) * 1500;
+      if (elapsed > threshold) {
+        sniperEngine.tick().catch(() => {});
+      }
+    }
+    sendResponse({ alive: true, state });
+    return true;
+  }
+
+  if (message.type === 'OPEN_POPOUT_WINDOW') {
+    if (typeof chrome !== 'undefined' && chrome.windows) {
+      chrome.windows.create(
+        {
+          url: chrome.runtime.getURL('popup/index.html?window=1'),
+          type: 'popup',
+          width: 420,
+          height: 680,
+          focused: true,
+        },
+        win => {
+          if (win?.id) {
+            activePopoutWindowId = win.id;
+          }
+        }
+      );
+    }
+    sendResponse({ success: true });
+    return true;
+  }
+
+  if (message.type === 'POPOUT_CLOSED') {
+    activePopoutWindowId = null;
+    currentDiscoveryId++;
+    sniperEngine.stop('Popout window closed by user');
+    if (typeof chrome !== 'undefined' && chrome.alarms) {
+      chrome.alarms.clear('sniper-heartbeat');
+    }
+    if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+      chrome.storage.local.remove(['lastAutoBooked', 'sniperState', 'pendingReservation']).catch(() => {});
+    }
+    sendResponse({ success: true });
+    return true;
+  }
+
+  if (message.type === 'RESET_AND_START_OVER') {
+    currentDiscoveryId++;
+    const state = sniperEngine.stop('User refreshed and started over');
+    if (typeof chrome !== 'undefined' && chrome.alarms) {
+      chrome.alarms.clear('sniper-heartbeat');
+    }
+    if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+      chrome.storage.local.remove(['lastAutoBooked', 'sniperState', 'pendingReservation']).catch(() => {});
+    }
+    sendResponse({ success: true, state });
+    return true;
+  }
 });
+
+// Window listener to auto-stop tasks when user closes the popout window
+if (typeof chrome !== 'undefined' && chrome.windows?.onRemoved) {
+  chrome.windows.onRemoved.addListener(closedWindowId => {
+    if (closedWindowId === activePopoutWindowId) {
+      activePopoutWindowId = null;
+      console.log('[Movie Assistant] Popout window closed. Stopping background tasks.');
+      currentDiscoveryId++;
+      sniperEngine.stop('Popout window closed');
+      if (chrome.alarms) {
+        chrome.alarms.clear('sniper-heartbeat');
+      }
+      chrome.storage.local.remove(['lastAutoBooked', 'sniperState', 'pendingReservation']).catch(() => {});
+    }
+  });
+}
+
+// Port listener for background keepalive from content scripts
+if (typeof chrome !== 'undefined' && chrome.runtime?.onConnect) {
+  chrome.runtime.onConnect.addListener(port => {
+    if (port.name === 'sniper-keepalive') {
+      port.onDisconnect.addListener(() => {
+        // Disconnect handled
+      });
+    }
+  });
+}
+
+// Setup alarm listener for background keepalive
+if (typeof chrome !== 'undefined' && chrome.alarms) {
+  chrome.alarms.onAlarm.addListener(alarm => {
+    if (alarm.name === 'sniper-heartbeat') {
+      const state = sniperEngine.getState();
+      if (state.config?.active) {
+        sniperEngine.tick().catch(console.error);
+      }
+    }
+  });
+}
 
 console.log('Movie Ticket Assistant service worker loaded.');
 console.log(`Registered ${adapterRegistry.listIds().length} cinema adapter(s).`);

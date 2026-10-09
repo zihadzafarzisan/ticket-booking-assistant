@@ -353,4 +353,50 @@ describe('selectOptimalSeats', () => {
     expect(selected).toHaveLength(2);
     expect(selected.map(s => s.label)).toEqual(['B10', 'B11']);
   });
+
+  describe('Row filtering (B, C, D, E, F restriction)', () => {
+    it('should only search for B, C, D, E, F rows and exclude back rows like L, N and front row A', () => {
+      const seatMap = createMockSeatMap({
+        A: [createMockSeat('A', 1), createMockSeat('A', 2), createMockSeat('A', 3)],
+        B: [createMockSeat('B', 1), createMockSeat('B', 2), createMockSeat('B', 3)],
+        C: [createMockSeat('C', 1), createMockSeat('C', 2), createMockSeat('C', 3)],
+        D: [createMockSeat('D', 1), createMockSeat('D', 2), createMockSeat('D', 3)],
+        E: [createMockSeat('E', 1), createMockSeat('E', 2), createMockSeat('E', 3)],
+        F: [createMockSeat('F', 1), createMockSeat('F', 2), createMockSeat('F', 3)],
+        L: [createMockSeat('L', 1), createMockSeat('L', 2), createMockSeat('L', 3), createMockSeat('L', 4)],
+        N: [createMockSeat('N', 1), createMockSeat('N', 2), createMockSeat('N', 3), createMockSeat('N', 4)],
+      });
+
+      const blocks = detectSeatBlocks(seatMap, {
+        requiredSeats: 2,
+        allowedRows: ['B', 'C', 'D', 'E', 'F'],
+      });
+
+      expect(blocks.length).toBeGreaterThan(0);
+      const rowsFound = blocks.map(b => b.row);
+
+      // Verify no back rows (L, N) or screen-front row A
+      expect(rowsFound).not.toContain('A');
+      expect(rowsFound).not.toContain('L');
+      expect(rowsFound).not.toContain('N');
+
+      // Verify only allowed rows are present
+      expect(rowsFound.every(r => ['B', 'C', 'D', 'E', 'F'].includes(r))).toBe(true);
+    });
+
+    it('should match row labels case-insensitively and handle prefixes', () => {
+      const seatMap = createMockSeatMap({
+        'Row B': [createMockSeat('Row B', 1), createMockSeat('Row B', 2)],
+        'Row L': [createMockSeat('Row L', 1), createMockSeat('Row L', 2)],
+      });
+
+      const blocks = detectSeatBlocks(seatMap, {
+        requiredSeats: 2,
+        allowedRows: ['B', 'C', 'D', 'E', 'F'],
+      });
+
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0].row).toBe('Row B');
+    });
+  });
 });

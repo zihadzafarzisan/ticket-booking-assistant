@@ -12,7 +12,9 @@ import { detectBookingState } from './utils';
 console.log(`[Movie Assistant] Content script active on ${window.location.hostname}${window.location.pathname}`);
 
 // Check for any pending reservation stored in chrome.storage on page load
+// Check for any pending reservation stored in chrome.storage on page load
 checkForPendingReservation();
+checkSniperStateAndRenderHud();
 
 // Listen for runtime commands from the extension
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -31,6 +33,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       handleSeatSelectionAndReservation(payload)
         .then(sendResponse)
         .catch(err => sendResponse({ success: false, error: err.message }));
+      return true;
+
+    case 'SNIPER_STATE_CHANGED':
+      renderOrUpdateSniperHud(payload);
+      sendResponse({ ok: true });
       return true;
 
     default:
@@ -312,4 +319,157 @@ function showCounterClosedNotice() {
   `;
 
   document.body.appendChild(banner);
+}
+
+/**
+ * Check if the Seat Drop Sniper is active and display the floating HUD
+ */
+async function checkSniperStateAndRenderHud() {
+  try {
+    const data = await chrome.storage.local.get('sniperState');
+    if (data?.sniperState) {
+      renderOrUpdateSniperHud(data.sniperState);
+    }
+  } catch (err) {
+    console.warn('[Movie Assistant] Failed to check sniper state for HUD:', err);
+  }
+}
+
+let keepAlivePort: chrome.runtime.Port | null = null;
+let heartbeatInterval: any = null;
+
+function ensureKeepAlive(isActive: boolean) {
+  if (isActive) {
+    if (!keepAlivePort && typeof chrome !== 'undefined' && chrome.runtime?.connect) {
+      try {
+        keepAlivePort = chrome.runtime.connect({ name: 'sniper-keepalive' });
+        keepAlivePort.onDisconnect.addListener(() => {
+          keepAlivePort = null;
+          // Reconnect if still active
+          setTimeout(() => {
+            if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+              chrome.storage.local.get('sniperState').then(d => {
+                if (d?.sniperState?.config?.active) ensureKeepAlive(true);
+              }).catch(() => {});
+            }
+          }, 1000);
+        });
+      } catch (e) {}
+    }
+
+    if (!heartbeatInterval) {
+      heartbeatInterval = setInterval(() => {
+        if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+          chrome.storage.local.get('sniperState').then(d => {
+            if (d?.sniperState?.config?.active) {
+              chrome.runtime.sendMessage({ type: 'SNIPER_HEARTBEAT' }).then(res => {
+                if (res?.state) renderOrUpdateSniperHud(res.state);
+              }).catch(() => {});
+            } else {
+              ensureKeepAlive(false);
+            }
+          }).catch(() => {});
+        }
+      }, 2500);
+    }
+  } else {
+    if (keepAlivePort) {
+      try { keepAlivePort.disconnect(); } catch (e) {}
+      keepAlivePort = null;
+    }
+    if (heartbeatInterval) {
+      clearInterval(heartbeatInterval);
+      heartbeatInterval = null;
+    }
+  }
+}
+
+/**
+ * Render or update in-page floating status HUD for the Sniper
+ */
+function renderOrUpdateSniperHud(state: any) {
+  if (!state || !state.config || (!state.config.active && state.status !== 'booked')) {
+    removeSniperHud();
+    return;
+  }
+
+  ensureKeepAlive(state.config.active);
+
+  const { config, status, refreshCount = 0, bookedSeats } = state;
+
+  let hud = document.getElementById('movie-assistant-sniper-hud');
+  if (!hud) {
+    hud = document.createElement('div');
+    hud.id = 'movie-assistant-sniper-hud';
+    hud.style.cssText = `
+      position: fixed;
+      top: 14px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 9999999;
+      background: #0c0a09;
+      color: #fafaf9;
+      border: 1px solid #dc2626;
+      border-radius: 10px;
+      padding: 10px 16px;
+      box-shadow: 0 12px 30px rgba(0,0,0,0.6);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      min-width: 320px;
+      max-width: 480px;
+      font-size: 12px;
+      line-height: 1.4;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      transition: all 0.2s ease;
+    `;
+    document.body.appendChild(hud);
+  }
+
+  const isBooked = status === 'booked';
+  const isWaiting = status === 'waiting_schedule';
+
+  hud.innerHTML = `
+    <div style="display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #292524; padding-bottom: 6px;">
+      <div style="display: flex; align-items: center; gap: 6px; font-weight: 700; color: ${isBooked ? '#22c55e' : '#ef4444'};">
+        <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: ${isBooked ? '#22c55e' : '#ef4444'};"></span>
+        <span>${isBooked ? '🎉 Seats Secured!' : isWaiting ? '⏳ Sniper Scheduled' : '🎯 Seat Drop Sniper Active'}</span>
+      </div>
+      <button id="movie-assistant-stop-sniper-btn" style="background: none; border: 1px solid #44403c; border-radius: 4px; color: #a8a29e; font-size: 11px; padding: 2px 6px; cursor: pointer;">
+        ${isBooked ? 'Close ✖' : 'Stop Sniper ✖'}
+      </button>
+    </div>
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 4px; font-size: 11px; color: #d6d3d1;">
+      <div>🎬 <strong>${config.movieName}</strong></div>
+      <div>📅 Target: <strong style="color: #ef4444;">${config.targetDate}</strong></div>
+      <div>💺 Required: <strong>${config.requiredSeats} seats</strong></div>
+      <div>🔄 Refreshes: <strong>${refreshCount}</strong></div>
+    </div>
+    <div style="font-size: 11px; color: ${isBooked ? '#86efac' : '#a8a29e'}; margin-top: 2px;">
+      ${
+        isBooked
+          ? `Selected continuous seats: <strong>${(bookedSeats || []).join(', ')}</strong>. Ready for payment!`
+          : isWaiting
+          ? 'Waiting for scheduled drop countdown...'
+          : `Auto-refreshing & scanning for newly opened seats every ${config.intervalSeconds}s...`
+      }
+    </div>
+  `;
+
+  const stopBtn = hud.querySelector('#movie-assistant-stop-sniper-btn');
+  if (stopBtn) {
+    stopBtn.addEventListener('click', () => {
+      chrome.runtime.sendMessage({ type: 'STOP_SNIPER', reason: 'User closed from page HUD' }, () => {
+        removeSniperHud();
+      });
+    });
+  }
+}
+
+function removeSniperHud() {
+  ensureKeepAlive(false);
+  const hud = document.getElementById('movie-assistant-sniper-hud');
+  if (hud) {
+    hud.remove();
+  }
 }

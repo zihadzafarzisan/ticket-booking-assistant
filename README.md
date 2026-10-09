@@ -113,6 +113,29 @@ Discovery → Result selected → Re-check availability → Select seats
 - Re-fetches seat map before booking — availability can change between discovery and checkout, so `selection succeeds` = actually verified.
 - If a CAPTCHA or payment screen appears, control hands back to the user.
 
+## 🎯 Seat Drop Sniper (Scheduled Release Auto-Grabber)
+
+For high-demand upcoming movie ticket releases where bookings open at a specific drop time (e.g. booking for **13th October** opening at **10th October 12:00 AM**):
+
+1. **Arm the Sniper**:
+   - Turn on the sniper from the extension popup (e.g. at 11:55 PM on 9th October).
+   - Enter your **target movie**, **target show date** (e.g. `2026-10-13`), and **required seats** (e.g. 2 continuous seats).
+   - Configure preferences: preferred row (Center/Middle, Back, Front), seat tier (Regular, Premium, VIP), and showtime range.
+   - Choose auto-refresh polling speed (2s, 2.5s, 5s).
+   - Set optional scheduled drop countdown or start refreshing immediately.
+
+2. **Automated Continuous Polling & Page Refresh**:
+   - The background service worker continuously queries real-time cinema inventory with cache-busting headers.
+   - Connected cinema tabs auto-refresh with a non-intrusive floating in-page HUD displaying live check counts and status.
+   - Live activity logs and counters update in real time inside the extension popup.
+
+3. **Instant Continuous Seat Acquisition**:
+   - The split second seats for the target date become available:
+     - The maximal continuous block algorithm selects the best centered seats.
+     - Automatically navigates to the seat map, clicks the seats on the SVG/DOM, and advances to checkout.
+     - Triggers an audible victory chime and desktop alert.
+     - Hands over to the user on the payment tab to finalize payment (bKash, Nagad, Card).
+
 ## Getting Started
 
 ```bash

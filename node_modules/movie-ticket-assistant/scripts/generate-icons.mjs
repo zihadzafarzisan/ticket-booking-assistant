@@ -9,13 +9,18 @@
  * Run: node scripts/generate-icons.mjs
  */
 import { deflateSync } from 'zlib';
-import { mkdirSync, writeFileSync } from 'fs';
+import { existsSync, statSync, mkdirSync, writeFileSync } from 'fs';
 import { resolve } from 'path';
 
 const SIZES = [16, 32, 48, 128];
-// Muted cinema-red, matches the popup accent
-const [R, G, B] = [0xdc, 0x26, 0x26];
 const outDir = resolve(process.cwd(), 'public/icons');
+
+// If custom icons already exist, do not overwrite with placeholders
+const icon128 = resolve(outDir, 'icon-128.png');
+if (existsSync(icon128) && statSync(icon128).size > 500) {
+  console.log('[icons] Custom extension icons already present, preserving them.');
+  process.exit(0);
+}
 
 function crc32(buf) {
   let c = ~0;

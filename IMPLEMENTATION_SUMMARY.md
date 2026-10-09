@@ -55,24 +55,30 @@ User Input (Movie + Seats)
 - `src/adapters/star-cineplex/adapter.ts` — Example Star Cineplex implementation
 - `src/adapters/registry.ts` — Built-in registry for discovering adapters
 
-### Extension Core
-- `src/background/service-worker.ts` — Orchestrates discovery, runs adapters concurrently, ranks results
-- `src/content/bridge.ts` + `src/content/utils.ts` — DOM interaction, booking-state detection
-- `public/manifest.json` — Manifest V3 config with minimal permissions
+### Extension Core & Sniper Engine
+- `src/background/service-worker.ts` — Orchestrates discovery, runs adapters, and manages background seat drop sniper
+- `src/services/sniper-engine.ts` — High-frequency polling engine for scheduled ticket drops, target date monitoring, and auto-reservation
+- `src/content/bridge.ts` + `src/content/utils.ts` — DOM interaction, seat clicking, booking-state detection, and in-page sniper HUD
+- `src/utils/date.ts` — Target date normalization, display formatting, upcoming date suggestions, and countdown timers
+- `src/utils/audio.ts` — Web Audio API synthesized victory chime on seat capture
+- `src/utils/notifications.ts` — Desktop notifications for captured tickets
+- `public/manifest.json` — Manifest V3 config with alarms & notifications permissions
 
 ### React Popup UI
-- `src/popup/App.tsx` — Main view controller (search → loading → results → seat map → booking)
+- `src/popup/App.tsx` — Main view controller with tabs for Instant Booking and Seat Drop Sniper
+- `src/popup/components/SniperForm.tsx` — Seat Drop Sniper configuration form (movie, target date, seats, drop time, preferences)
+- `src/popup/components/SniperActiveView.tsx` — Real-time sniper dashboard with live refresh counter, countdown, and activity log console
 - `src/popup/components/SearchForm.tsx` — Movie + seats input, optional advanced filters
 - `src/popup/components/ResultsGrid.tsx` — Ranked results with sort options
 - `src/popup/components/ResultCard.tsx` — Individual result card with seat block info
 - `src/popup/components/LoadingState.tsx` — Discovery progress indicator
-- `src/popup/styles.css` — Responsive popup styling (380px width)
+- `src/popup/styles.css` — Responsive popup styling (380px width) with radar animations and sniper themes
 - `src/popup/index.html` + `index.tsx` — Entry points
 
 ### Type Definitions
+- `src/types/sniper.ts` — SniperConfig, SniperState, SniperLogEntry, SniperCheckResult, RankedResult
 - `src/types/cinema.ts` — Movie, Cinema, Showtime, ShowtimeFilters, ScreenType
 - `src/types/seat.ts` — Seat, SeatMap, SeatBlock, SeatStatus, SeatCategory
-- `src/types/booking.ts` — (Not yet written; ready for booking state machine)
 
 ### Build & Config
 - `vite.config.ts` — Vite + chrome-extension plugin build configuration
@@ -238,15 +244,39 @@ If user needs 3 seats → show **Block 1 only** (has capacity ≥ 3), not F2-F4,
 
 ---
 
+## Recent Enhancements (Row Restriction, Refresh / Start Over, Multi-Time Slot)
+
+### 1. B, C, D, E, F Row Restriction (Excludes Backrows L, N & Row A)
+- **Problem Fixed**: When pressing "⚡ Auto-Book Available Seats", the bot previously picked back-row seats (such as rows L and N) because larger vacant sections in back rows scored artificially high on block capacity.
+- **Solution**:
+  - `detectSeatBlocks` and `runDiscovery` now enforce an `allowedRows` whitelist defaulting strictly to rows `['B', 'C', 'D', 'E', 'F']`.
+  - Rows A (too close to screen) and G through N (balcony/backrows) are completely excluded from auto-reservation.
+  - Interactive row toggle chips (`[Row B] [Row C] [Row D] [Row E] [Row F]`) are provided on both Instant Book and Seat Drop Sniper forms.
+
+### 2. Refresh Option & Popout Window Lifecycle ("Start Over")
+- **Problem Fixed**: Closing or reloading the popout window left background bot loops polling without an easy way to reset or start over.
+- **Solution**:
+  - Added a dedicated `🔄 Refresh` button in the extension header.
+  - Clicking `🔄 Refresh` sends `RESET_AND_START_OVER` to the service worker, stops any running sniper loops, clears `chrome.storage.local` cache (`lastAutoBooked`, `sniperState`, `pendingReservation`), and resets the UI cleanly back to the search form.
+  - Popout reload detection: pressing browser reload / F5 in the popout window (`?window=1`) automatically triggers a full start-over.
+  - Popout close detection: closing the popout window triggers `POPOUT_CLOSED` and `chrome.windows.onRemoved`, immediately shutting down background polling.
+
+### 3. Multiple Time Slots (Afternoon + Evening)
+- **Problem Fixed**: Previously only a single time slot could be chosen from a dropdown.
+- **Solution**:
+  - Replaced single dropdown with multi-select interactive chips for `🌅 Morning (<12 PM)`, `☀️ Afternoon (12-5 PM)`, `🌆 Evening (5-9 PM)`, and `🌙 Night (>9 PM)`.
+  - Added one-click quick preset: `☀️ Afternoon + 🌆 Evening`.
+  - Multi-slot filtering integrated into `runDiscovery`, `SniperEngine.performCheck`, and multi-factor ranking.
+
+---
+
 ## Getting Started
 
 The extension is **ready to develop, test, and ship**:
 
-1. All core algorithms tested and verified
+1. All core algorithms tested and verified (40 tests passing)
 2. Adapter system ready for extension
-3. UI complete and functional
+3. UI complete and functional with B-F row restriction, multi-time slot filter, and refresh option
 4. Security model in place
 5. Documentation complete
-
-Next: Install locally, test the discovery flow, then add the second cinema adapter to demonstrate the extensibility.
 

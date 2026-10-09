@@ -6,6 +6,7 @@
 
 import { Showtime, ScreenType } from '../../types/cinema';
 import { SeatBlock } from '../../types/seat';
+import { getTimeSlot, isRowAllowed, normalizeRowLabel } from '../../utils/date';
 
 /**
  * Configurable ranking weights
@@ -23,7 +24,9 @@ export interface RankingWeights {
  * Ranking criteria/inputs
  */
 export interface RankingCriteria {
-  preferredTime?: string;         // 'morning' | 'afternoon' | 'evening'
+  preferredTime?: string;         // 'morning' | 'afternoon' | 'evening' | 'night'
+  preferredTimes?: string[];      // Multiple time slots e.g. ['afternoon', 'evening']
+  allowedRows?: string[];         // e.g. ['B', 'C', 'D', 'E', 'F']
   preferredCinemaIds?: string[];
   preferredScreenTypes?: ScreenType[];
   maxPrice?: number;
@@ -107,7 +110,7 @@ export function scoreResult(
   weights: RankingWeights,
   criteria: RankingCriteria = {}
 ): RankedResult {
-  const seatQualityScore = calculateSeatQualityScore(seatBlock);
+  const seatQualityScore = calculateSeatQualityScore(seatBlock, criteria);
   const showtimeScore = calculateShowtimeScore(showtime, criteria);
   const cinemaScore = calculateCinemaScore(showtime, criteria);
   const hallFormatScore = calculateHallFormatScore(showtime, criteria);
@@ -145,17 +148,33 @@ export function scoreResult(
 
 /**
  * Calculate seat quality score (0-1)
- * Based on center score and block capacity
+ * Based on center score, block capacity, and row positioning
  */
-function calculateSeatQualityScore(block: SeatBlock): number {
+function calculateSeatQualityScore(block: SeatBlock, criteria?: RankingCriteria): number {
+  // If allowedRows is specified and block is not in it, penalize to 0
+  if (criteria?.allowedRows && criteria.allowedRows.length > 0) {
+    if (!isRowAllowed(block.row, criteria.allowedRows)) {
+      return 0;
+    }
+  }
+
   // Primary factor: center score from the block detection
   const centerWeight = 0.7;
   const capacityWeight = 0.3;
 
   // Capacity bonus: larger blocks score slightly higher
   const capacityScore = Math.min(block.capacity / 8, 1);
+  let score = block.centerScore * centerWeight + capacityScore * capacityWeight;
 
-  return block.centerScore * centerWeight + capacityScore * capacityWeight;
+  // Prime center rows bonus (C, D, E are cinema sweet spot; B, F are secondary)
+  const normRow = normalizeRowLabel(block.row);
+  if (['C', 'D', 'E'].includes(normRow)) {
+    score = Math.min(1.0, score * 1.15);
+  } else if (['B', 'F'].includes(normRow)) {
+    score = Math.min(1.0, score * 1.05);
+  }
+
+  return score;
 }
 
 /**
@@ -165,24 +184,28 @@ function calculateShowtimeScore(
   showtime: Showtime,
   criteria: RankingCriteria
 ): number {
-  // Check preferred time
-  if (criteria.preferredTime) {
-    const hour = parseInt(showtime.time.split(':')[0]);
-
-    let period: string;
-    if (hour < 12) period = 'morning';
-    else if (hour < 18) period = 'afternoon';
-    else period = 'evening';
-
-    if (period === criteria.preferredTime) {
-      return TIME_PERIOD_SCORES[period] || 1;
+  // Check multiple preferred times
+  if (criteria.preferredTimes && criteria.preferredTimes.length > 0) {
+    const slot = getTimeSlot(showtime.time);
+    if (criteria.preferredTimes.includes(slot)) {
+      return 1.0;
     }
+    return 0.3;
+  }
+
+  // Check single preferred time
+  if (criteria.preferredTime && criteria.preferredTime !== 'any') {
+    const slot = getTimeSlot(showtime.time);
+    if (slot === criteria.preferredTime) {
+      return 1.0;
+    }
+    return 0.3;
   }
 
   // Default: slightly favor evening, penalize very early/late
   const hour = parseInt(showtime.time.split(':')[0]);
-  if (hour >= 18 && hour <= 21) return 0.9;
-  if (hour >= 12 && hour <= 23) return 0.7;
+  if (hour >= 17 && hour <= 21) return 0.9;
+  if (hour >= 12 && hour < 17) return 0.8;
   return 0.5;
 }
 
