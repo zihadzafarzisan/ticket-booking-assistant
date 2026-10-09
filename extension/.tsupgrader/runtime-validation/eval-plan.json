@@ -1,0 +1,32 @@
+{
+  "generatedAt": "2026-10-09T10:06:05Z",
+  "generatedOnPlatform": "win32",
+  "projectType": "plugin",
+  "setup": [
+    {
+      "command": "npm",
+      "args": ["ci"],
+      "cwd": "E:\\movie ticket assistant"
+    }
+  ],
+  "assertions": [
+    {
+      "name": "extension-builds",
+      "kind": "process",
+      "command": "npm",
+      "args": ["run", "build"],
+      "verificationMethod": "exit-code",
+      "expected": "0",
+      "timeoutSeconds": 300
+    },
+    {
+      "name": "tests-pass",
+      "kind": "process",
+      "command": "npm",
+      "args": ["test"],
+      "verificationMethod": "test-results",
+      "expected": "0",
+      "timeoutSeconds": 300
+    }
+  ]
+}

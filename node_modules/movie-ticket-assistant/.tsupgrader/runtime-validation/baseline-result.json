@@ -1,0 +1,84 @@
+{
+  "planHash": "2914b3666d8aaa7ec5ff6ed2f79aa60a6c87ac98b723d84ad291d2f537e835cc",
+  "phase": "baseline",
+  "recordedAtUtc": "2026-10-09T10:10:26.3310038Z",
+  "retryCount": 0,
+  "resetBaseline": true,
+  "complete": true,
+  "result": {
+    "setupSucceeded": true,
+    "setupDurationMs": 19950,
+    "setupFailureOutput": null,
+    "assertions": [
+      {
+        "name": "extension-builds",
+        "kind": "process",
+        "verificationMethod": "exit-code",
+        "passed": false,
+        "timedOut": false,
+        "skipped": false,
+        "skippedReason": null,
+        "exitCode": 1,
+        "outputSample": "npm notice run movie-ticket-assistant@0.1.0 build\r\nnpm notice run node scripts/generate-icons.mjs \u0026\u0026 tsc \u0026\u0026 vite build \u0026\u0026 node scripts/postbuild.mjs\r\n[icons] wrote E:\\movie ticket assistant\\extension\\public\\icons\\icon-16.png\r\n[icons] wrote E:\\movie ticket assistant\\extension\\public\\icons\\icon-32.png\r\n[icons] wrote E:\\movie ticket assistant\\extension\\public\\icons\\icon-48.png\r\n[icons] wrote E:\\movie ticket assistant\\extension\\public\\icons\\icon-128.png\r\n[icons] Done.\r\n\u001B[33m(!) Your Vite config uses features that are unsupported by \u0060configLoader: \u0027native\u0027\u0060, which is planned to become the default in a future major version of Vite:\r\n  - \u0060__dirname\u0060 (vite.config.ts:17:19). Use \u0060import.meta.dirname\u0060 instead\r\nSet \u0060VITE_CONFIG_NATIVE_IGNORE_WARNING=true\u0060 to suppress this warning.\u001B[39m\r\n\u001B[2m4:10:24 PM\u001B[22m \u001B[33m\u001B[1m[vite]\u001B[22m\u001B[39m \u001B[33mwarning: \u0060esbuild\u0060 option was specified by \u0022vite:react-babel\u0022 plugin. This option is deprecated, please use \u0060oxc\u0060 instead.\u001B[39m\r\n\u0060optimizeDeps.rollupOptions\u0060 / \u0060ssr.optimizeDeps.rollupOptions\u0060 is deprecated. Use \u0060optimizeDeps.rolldownOptions\u0060 instead. Note that this option may be set by a plugin. Set VITE_DEPRECATION_TRACE=1 to see where it is called.\r\n[vite:react-babel] We recommend switching to \u0060@vitejs/plugin-react-oxc\u0060 for improved performance. More information at https://vite.dev/rolldown\r\n\u001B[36mvite v8.2.2 \u001B[32mbuilding client environment for production...\u001B[36m\u001B[39m\r\ntransforming...\r\n\u2713 29 modules transformed.\r\n\u001B[31m\u2717\u001B[39m Build failed in 73ms\r\n\u001B[31merror during build:\r\n\u001B[31mBuild failed with 1 error:\r\n\r\n[plugin vite:prepare-out-dir]\r\nError: EPERM, Permission denied: \\\\?\\E:\\movie ticket assistant\\extension\\dist\\popup.js \u0027\\\\?\\E:\\movie ticket assistant\\extension\\dist\\popup.js\u0027\r\n    at Object.rmSync (node:fs:1484:18)\r\n    at emptyDir (file:///E:/movie%20ticket%20assistant/node_modules/vite/dist/node/chunks/node.js:2434:11)\r\n    at prepareOutDir (file:///E:/movie%20ticket%20assistant/node_modules/vite/dist/node/chunks/node.js:33559:55)\r\n    at PluginContextImpl.handler (file:///E:/movie%20ticket%20assistant/node_modules/vite/dist/node/chunks/node.js:33548:6)\r\n    at PluginContextImpl.handler (file:///E:/movie%20ticket%20assistant/node_modules/vite/dist/node/chunks/node.js:34080:13)\r\n    at plugin (file:///E:/movie%20ticket%20assistant/node_modules/rolldown/dist/shared/bindingify-input-options-DrImMHKQ.mjs:1609:17)\r\n    at file:///E:/movie%20ticket%20assistant/node_modules/rolldown/dist/shared/bindingify-input-options-DrImMHKQ.mjs:1930:21\r\n    at plugin.\u003Ccomputed\u003E (file:///E:/movie%20ticket%20assistant/node_modules/rolldown/dist/shared/bindingify-input-options-DrImMHKQ.mjs:2127:18)\u001B[31m\r\n    at aggregateBindingErrorsIntoJsError (file:///E:/movie%20ticket%20assistant/node_modules/rolldown/dist/shared/error-BP8lJHle.mjs:48:18)\r\n    at unwrapBindingResult (file:///E:/movie%20ticket%20assistant/node_modules/rolldown/dist/shared/error-BP8lJHle.mjs:18:128)\r\n    at #build (file:///E:/movie%20ticket%20assistant/node_modules/rolldown/dist/shared/rolldown-DfXO5K1m.mjs:133:34)\r\n    at async buildEnvironment (file:///E:/movie%20ticket%20assistant/node_modules/vite/dist/node/chunks/node.js:33821:66)\r\n    at async Object.build (file:///E:/movie%20ticket%20assistant/node_modules/vite/dist/node/chunks/node.js:34242:19)\r\n    at async Object.buildApp (file:///E:/movie%20ticket%20assistant/node_modules/vite/dist/node/chunks/node.js:34239:153)\r\n    at async CAC.\u003Canonymous\u003E (file:///E:/movie%20ticket%20assistant/node_modules/vite/dist/node/cli.js:776:3) {\r\n  errors: [Getter/Setter]\r\n}\u001B[39m\r\nnpm error Lifecycle script \u0060build\u0060 failed with error:\r\nnpm error code 1\r\nnpm error path E:\\movie ticket assistant\\extension\r\nnpm error workspace movie-ticket-assistant@0.1.0\r\nnpm error location E:\\movie ticket assistant\\extension\r\nnpm error command failed\r\nnpm error command C:\\WINDOWS\\system32\\cmd.exe /d /s /c node scripts/generate-icons.mjs \u0026\u0026 tsc \u0026\u0026 vite build \u0026\u0026 node scripts/postbuild.mjs\r\n",
+        "durationMs": 2912
+      },
+      {
+        "name": "tests-pass",
+        "kind": "process",
+        "verificationMethod": "test-results",
+        "passed": true,
+        "timedOut": false,
+        "skipped": false,
+        "skippedReason": null,
+        "exitCode": 0,
+        "outputSample": "npm notice run movie-ticket-assistant@0.1.0 test\r\nnpm notice run vitest run\r\n\u001B[33m(!) Your Vite config uses features that are unsupported by \u0060configLoader: \u0027native\u0027\u0060, which is planned to become the default in a future major version of Vite:\r\n  - \u0060__dirname\u0060 (vitest.config.ts:11:20). Use \u0060import.meta.dirname\u0060 instead\r\nSet \u0060VITE_CONFIG_NATIVE_IGNORE_WARNING=true\u0060 to suppress this warning.\u001B[39m\r\n\u001B[2m4:10:25 PM\u001B[22m \u001B[33m\u001B[1m[vite]\u001B[22m\u001B[39m \u001B[33mwarning: \u0060esbuild\u0060 option was specified by \u0022vite:react-babel\u0022 plugin. This option is deprecated, please use \u0060oxc\u0060 instead.\u001B[39m\r\n\u0060optimizeDeps.rollupOptions\u0060 / \u0060ssr.optimizeDeps.rollupOptions\u0060 is deprecated. Use \u0060optimizeDeps.rolldownOptions\u0060 instead. Note that this option may be set by a plugin. Set VITE_DEPRECATION_TRACE=1 to see where it is called.\r\n\u001B[33mBoth esbuild and oxc options were set. oxc options will be used and esbuild options will be ignored.\u001B[39m The following esbuild options were set: \u0060{ jsx: \u0027automatic\u0027, jsxImportSource: undefined }\u0060\r\n[vite:react-babel] We recommend switching to \u0060@vitejs/plugin-react-oxc\u0060 for improved performance. More information at https://vite.dev/rolldown\r\n\r\n RUN  v5.0.0 E:/movie ticket assistant/extension\r\n\r\n\r\n Test Files  3 passed (3)\r\n      Tests  23 passed (23)\r\n   Start at  16:10:25\r\n   Duration  321ms (transform 58%, import 26%, tests 9%, worker 7%)\r\n\r\n",
+        "durationMs": 1586,
+        "testResults": {
+          "testFramework": "vitest",
+          "runnerDetectedFrom": "package_json",
+          "testsTotal": 23,
+          "testsPassed": 23,
+          "testsFailed": 0,
+          "testsSkipped": 0,
+          "parseFailed": false
+        }
+      }
+    ],
+    "executions": [
+      {
+        "source": "setup[0]",
+        "resolvedExecutable": "E:\\nodejs\\npm.CMD",
+        "args": [
+          "ci"
+        ],
+        "cwd": "E:\\movie ticket assistant",
+        "env": {},
+        "prependPath": [],
+        "platform": "win32"
+      },
+      {
+        "source": "extension-builds",
+        "resolvedExecutable": "E:\\nodejs\\npm.CMD",
+        "args": [
+          "run",
+          "build"
+        ],
+        "cwd": "E:\\movie ticket assistant\\extension",
+        "env": {},
+        "prependPath": [],
+        "platform": "win32"
+      },
+      {
+        "source": "tests-pass",
+        "resolvedExecutable": "E:\\nodejs\\npm.CMD",
+        "args": [
+          "test"
+        ],
+        "cwd": "E:\\movie ticket assistant\\extension",
+        "env": {},
+        "prependPath": [],
+        "platform": "win32"
+      }
+    ]
+  }
+}

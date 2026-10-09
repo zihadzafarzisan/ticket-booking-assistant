@@ -11,6 +11,9 @@
   ],
   "host_permissions": [
     "https://*.starcineplex.com/*",
+    "https://starcineplex.com/*",
+    "https://*.kichole.com/*",
+    "https://*.cineplexbd.com/*",
     "https://*.cineplex.com.bd/*",
     "https://*.blockbuster.com.bd/*"
   ],
@@ -31,6 +34,10 @@
     {
       "matches": [
         "https://*.starcineplex.com/*",
+        "https://starcineplex.com/*",
+        "https://*.kichole.com/*",
+        "https://kichole.com/*",
+        "https://*.cineplexbd.com/*",
         "https://*.cineplex.com.bd/*",
         "https://*.blockbuster.com.bd/*"
       ],
