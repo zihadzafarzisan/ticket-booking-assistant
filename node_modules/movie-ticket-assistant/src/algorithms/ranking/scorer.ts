@@ -4,7 +4,7 @@
  * Scores and ranks discovered ticket options based on configurable weights.
  */
 
-import { Showtime, ScreenType } from '../../types/cinema';
+import { Showtime, ScreenType, matchesLocation } from '../../types/cinema';
 import { SeatBlock } from '../../types/seat';
 import { getTimeSlot, isRowAllowed, normalizeRowLabel } from '../../utils/date';
 
@@ -28,6 +28,7 @@ export interface RankingCriteria {
   preferredTimes?: string[];      // Multiple time slots e.g. ['afternoon', 'evening']
   allowedRows?: string[];         // e.g. ['B', 'C', 'D', 'E', 'F']
   preferredCinemaIds?: string[];
+  preferredLocationIds?: string[]; // Multiple branch IDs e.g. ['bashundhara', 'sony-square']
   preferredScreenTypes?: ScreenType[];
   maxPrice?: number;
   preferredSeatSection?: string;
@@ -216,6 +217,12 @@ function calculateCinemaScore(
   showtime: Showtime,
   criteria: RankingCriteria
 ): number {
+  if (criteria.preferredLocationIds && criteria.preferredLocationIds.length > 0) {
+    if (matchesLocation(showtime, criteria.preferredLocationIds)) {
+      return 1.0;
+    }
+    return 0.2;
+  }
   if (criteria.preferredCinemaIds?.includes(showtime.cinema.id)) {
     return 1.0;
   }

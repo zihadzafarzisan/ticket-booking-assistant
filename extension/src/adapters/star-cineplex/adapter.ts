@@ -335,62 +335,148 @@ export class StarCineplexAdapter extends CinemaAdapter {
   private parseApiSeatMap(rawMap: ApiSeatMap, showtime: Showtime): SeatMap {
     const rowsMap = new Map<string, Seat[]>();
     const totalCapacity = showtime.totalSeats || 100;
-    const availableCount = showtime.availableSeats || totalCapacity;
+    const availableCount = Math.min(showtime.availableSeats || totalCapacity, totalCapacity);
+    const occupiedNeeded = Math.max(0, totalCapacity - availableCount);
 
-    // Deterministic pseudo-random seed based on showtime ID for consistent occupied distribution
-    const seed = this.hashString(showtime.id);
-    let seatIndex = 0;
+    // Collect all seats with their initial metadata
+    interface RawSeatItem {
+      id: string;
+      rowLabel: string;
+      number: number;
+      label: string;
+      category: SeatCategory;
+      price: number;
+      section?: string;
+    }
+
+    const allSeats: RawSeatItem[] = [];
+    const seatsByRow = new Map<string, RawSeatItem[]>();
 
     for (const section of rawMap.sections || []) {
       for (const row of section.rows || []) {
         const rowLabel = row.rowLabel;
-        const rowSeats: Seat[] = [];
+        const rowItems: RawSeatItem[] = [];
 
         for (const s of row.seats || []) {
-          // Parse seat number from label (e.g. "K04" -> 4) or use column
           const matchNum = s.label.match(/\d+/);
           const seatNumber = matchNum ? parseInt(matchNum[0], 10) : s.column;
-
-          // Pseudorandom pseudo-availability matching the actual showtime available count
-          const isAvailable = this.seededRandom(seed, seatIndex++) < (availableCount / totalCapacity);
-
           const seatCategory: SeatCategory = (
             s.category ||
             section.category ||
             'regular'
           ).toLowerCase() as SeatCategory;
 
-          rowSeats.push({
+          const item: RawSeatItem = {
             id: `${rowLabel}-${s.label}`,
-            row: rowLabel,
+            rowLabel,
             number: seatNumber,
             label: s.label,
-            status: isAvailable ? 'available' : 'occupied',
             category: seatCategory,
             price: showtime.price,
             section: section.name || undefined,
-          });
+          };
+          rowItems.push(item);
+          allSeats.push(item);
         }
 
-        // Sort seats in row by number
-        rowSeats.sort((a, b) => a.number - b.number);
-
-        // Populate adjacentSeatIds based on contiguous seat numbers
-        for (let i = 0; i < rowSeats.length; i++) {
-          const adj: string[] = [];
-          if (i > 0 && rowSeats[i].number - rowSeats[i - 1].number === 1) {
-            adj.push(rowSeats[i - 1].id);
-          }
-          if (i < rowSeats.length - 1 && rowSeats[i + 1].number - rowSeats[i].number === 1) {
-            adj.push(rowSeats[i + 1].id);
-          }
-          rowSeats[i].adjacentSeatIds = adj;
-        }
-
-        // Store or merge row
-        const existing = rowsMap.get(rowLabel) || [];
-        rowsMap.set(rowLabel, [...existing, ...rowSeats]);
+        rowItems.sort((a, b) => a.number - b.number);
+        const existing = seatsByRow.get(rowLabel) || [];
+        seatsByRow.set(rowLabel, [...existing, ...rowItems]);
       }
+    }
+
+    // Determine occupied seat IDs in realistic clusters (2 to 4 seats)
+    // Real audience fills back rows first (P, N, M, L, K, J, etc.) and leaves front/middle rows (B, C, D, E, F) open.
+    const occupiedSeatIds = new Set<string>();
+    const seed = this.hashString(showtime.id);
+    let rngStep = 0;
+
+    if (occupiedNeeded > 0) {
+      // Prioritize rows from back to front
+      const sortedRowLabels = Array.from(seatsByRow.keys()).sort((a, b) => {
+        const getPriority = (r: string) => {
+          const clean = r.toUpperCase().trim();
+          // Rows B-F are prioritized for our users, so we book them last in the cinema
+          if (['B', 'C', 'D', 'E', 'F'].includes(clean)) return 100 - clean.charCodeAt(0);
+          // Row A (very front) is undesirable
+          if (clean === 'A') return 20;
+          // Back rows have highest booking priority
+          return 10 + (clean.charCodeAt(0) * -1);
+        };
+        return getPriority(a) - getPriority(b);
+      });
+
+      let remainingToOccupy = occupiedNeeded;
+
+      // First pass: book clusters of 2-4 seats starting from back rows
+      for (const rowLabel of sortedRowLabels) {
+        if (remainingToOccupy <= 0) break;
+        const rSeats = seatsByRow.get(rowLabel) || [];
+        if (rSeats.length === 0) continue;
+
+        const maxClusters = Math.ceil(rSeats.length / 4);
+        for (let c = 0; c < maxClusters && remainingToOccupy > 0; c++) {
+          const clusterSize = Math.min(
+            remainingToOccupy,
+            2 + Math.floor(this.seededRandom(seed, rngStep++) * 3) // 2 to 4 seats
+          );
+
+          const maxStart = Math.max(0, rSeats.length - clusterSize);
+          const startIdx = Math.floor(this.seededRandom(seed, rngStep++) * (maxStart + 1));
+
+          for (let i = 0; i < clusterSize && remainingToOccupy > 0; i++) {
+            const seat = rSeats[startIdx + i];
+            if (seat && !occupiedSeatIds.has(seat.id)) {
+              occupiedSeatIds.add(seat.id);
+              remainingToOccupy--;
+            }
+          }
+        }
+      }
+
+      // If still need to occupy, fill remaining seats
+      if (remainingToOccupy > 0) {
+        for (const seat of allSeats) {
+          if (remainingToOccupy <= 0) break;
+          if (!occupiedSeatIds.has(seat.id)) {
+            occupiedSeatIds.add(seat.id);
+            remainingToOccupy--;
+          }
+        }
+      }
+    }
+
+    // Now build normalized rows
+    for (const [rowLabel, rItems] of seatsByRow.entries()) {
+      const rowSeats: Seat[] = rItems.map(item => ({
+        id: item.id,
+        row: item.rowLabel,
+        number: item.number,
+        label: item.label,
+        status: occupiedSeatIds.has(item.id) ? 'occupied' : 'available',
+        category: item.category,
+        price: item.price,
+        section: item.section,
+      }));
+
+      // Sort by seat number
+      rowSeats.sort((a, b) => a.number - b.number);
+
+      // Populate adjacentSeatIds based on contiguous seat numbers
+      for (let i = 0; i < rowSeats.length; i++) {
+        const adj: string[] = [];
+        if (i > 0 && rowSeats[i].number - rowSeats[i - 1].number === 1) {
+          adj.push(rowSeats[i - 1].id);
+        }
+        if (i < rowSeats.length - 1 && rowSeats[i + 1].number - rowSeats[i].number === 1) {
+          adj.push(rowSeats[i + 1].id);
+        }
+        rowSeats[i].adjacentSeatIds = adj;
+      }
+
+      // Store or merge row
+      const existing = rowsMap.get(rowLabel) || [];
+      rowsMap.set(rowLabel, [...existing, ...rowSeats]);
     }
 
     return {

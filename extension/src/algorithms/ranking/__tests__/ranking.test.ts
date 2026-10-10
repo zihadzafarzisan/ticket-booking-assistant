@@ -3,7 +3,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { rankResults, scoreResult, DEFAULT_WEIGHTS } from '../scorer';
-import { Showtime, ScreenType } from '../../../types/cinema';
+import { Showtime, ScreenType, matchesLocation } from '../../../types/cinema';
 import { SeatBlock } from '../../../types/seat';
 
 function createShowtime(overrides: Partial<Showtime> = {}): Showtime {
@@ -147,5 +147,42 @@ describe('rankResults', () => {
     const ranked = rankResults(results, DEFAULT_WEIGHTS, { preferredTime: 'evening' });
 
     expect(ranked[0].overallScore).toBeGreaterThanOrEqual(ranked[1].overallScore);
+  });
+
+  describe('matchesLocation and preferredLocationIds', () => {
+    it('matches showtime by venueId or cinema location name', () => {
+      const showBashundhara = createShowtime({
+        venueId: '8be12859-1385-45b6-89da-46ab8154ea3d',
+        cinema: { id: 'star-cineplex', name: 'Star Cineplex (Bashundhara City)', location: 'Panthapath, Dhaka' },
+      });
+      const showSony = createShowtime({
+        venueId: '07ce0273-2b9f-4563-a02c-bb160284cb3b',
+        cinema: { id: 'star-cineplex', name: 'Star Cineplex (Sony Square)', location: 'Mirpur, Dhaka' },
+      });
+      const showChattogram = createShowtime({
+        venueId: '429925b0-b1a5-42bd-b109-4d189c608797',
+        cinema: { id: 'star-cineplex', name: 'Star Cineplex (Bali Arcade)', location: 'Chattogram' },
+      });
+
+      // User selects Bashundhara and Sony Square
+      const selected = ['bashundhara', 'sony-square'];
+      expect(matchesLocation(showBashundhara, selected)).toBe(true);
+      expect(matchesLocation(showSony, selected)).toBe(true);
+      expect(matchesLocation(showChattogram, selected)).toBe(false);
+    });
+
+    it('awards 1.0 cinemaScore to shows matching preferredLocationIds', () => {
+      const showSony = createShowtime({
+        venueId: '07ce0273-2b9f-4563-a02c-bb160284cb3b',
+        cinema: { id: 'star-cineplex', name: 'Star Cineplex (Sony Square)', location: 'Mirpur' },
+      });
+      const block = createBlock(4, 0.7);
+
+      const res = scoreResult(showSony, block, DEFAULT_WEIGHTS, {
+        preferredLocationIds: ['sony-square', 'bashundhara'],
+      });
+
+      expect(res.cinemaScore).toBe(1.0);
+    });
   });
 });

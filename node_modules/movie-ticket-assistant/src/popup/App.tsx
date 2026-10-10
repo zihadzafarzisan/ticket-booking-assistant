@@ -24,6 +24,7 @@ interface SearchParams {
   seats: number;
   preferredTimes?: TimeSlot[];
   allowedRows?: string[];
+  preferredLocationIds?: string[];
 }
 
 interface AutoBookedPayload {
@@ -31,6 +32,12 @@ interface AutoBookedPayload {
   optimalSeatLabels: string[];
   bookingUrl: string;
   tabId?: number;
+  multiBookings?: Array<{
+    result: RankedResult;
+    optimalSeatLabels: string[];
+    bookingUrl: string;
+    tabId?: number;
+  }>;
 }
 
 export default function App() {
@@ -190,12 +197,29 @@ export default function App() {
       // Check if an auto-booking was completed while popup was closed
       chrome.storage.local.get('lastAutoBooked').then(data => {
         const last = data?.lastAutoBooked;
-        if (last?.reservation?.success && last.result && Date.now() - (last.timestamp || 0) < 300000) {
+        const hasSuccess = last?.reservation?.success || (Array.isArray(last?.reservations) && last.reservations.some((r: any) => r.success));
+        if (hasSuccess && last?.result && Date.now() - (last.timestamp || 0) < 300000) {
+          const multiList: any[] = [];
+          if (Array.isArray(last.results) && Array.isArray(last.reservations) && last.results.length > 1) {
+            for (let i = 0; i < last.results.length; i++) {
+              const rsv = last.reservations[i];
+              if (rsv && rsv.success) {
+                multiList.push({
+                  result: last.results[i],
+                  optimalSeatLabels: rsv.seatLabels || [],
+                  bookingUrl: rsv.bookingUrl || last.results[i].showtime.bookingUrl,
+                  tabId: rsv.tabId,
+                });
+              }
+            }
+          }
+
           setAutoBookedData({
             result: last.result,
-            optimalSeatLabels: last.reservation.seatLabels || [],
-            bookingUrl: last.reservation.bookingUrl || last.result.showtime.bookingUrl,
-            tabId: last.reservation.tabId,
+            optimalSeatLabels: last.reservation?.seatLabels || multiList[0]?.optimalSeatLabels || [],
+            bookingUrl: last.reservation?.bookingUrl || multiList[0]?.bookingUrl || last.result.showtime.bookingUrl,
+            tabId: last.reservation?.tabId || multiList[0]?.tabId,
+            multiBookings: multiList.length > 1 ? multiList : undefined,
           });
           setView('auto_booked');
         }
@@ -244,21 +268,49 @@ export default function App() {
           criteria: {
             preferredTimes: params.preferredTimes,
             allowedRows: params.allowedRows || ['B', 'C', 'D', 'E', 'F'],
+            preferredLocationIds: params.preferredLocationIds,
           },
         },
       }, 25000);
 
       const discovery = response?.discovery;
       const reservation = response?.reservation;
+      const reservations = response?.reservations as any[] | undefined;
+      const targetResults = response?.results as RankedResult[] | undefined;
 
-      if (reservation?.success && discovery?.results?.length > 0) {
-        const topResult = discovery.results[0];
+      const hasSuccess = reservation?.success || (Array.isArray(reservations) && reservations.some(r => r.success));
+
+      if (hasSuccess && discovery?.results?.length > 0) {
+        const topResult = targetResults?.[0] || discovery.results[0];
         setResults(discovery.results);
+
+        const multiList: Array<{
+          result: RankedResult;
+          optimalSeatLabels: string[];
+          bookingUrl: string;
+          tabId?: number;
+        }> = [];
+
+        if (targetResults && reservations && targetResults.length > 1) {
+          for (let i = 0; i < targetResults.length; i++) {
+            const rsv = reservations[i];
+            if (rsv && rsv.success) {
+              multiList.push({
+                result: targetResults[i],
+                optimalSeatLabels: rsv.seatLabels || [],
+                bookingUrl: rsv.bookingUrl || targetResults[i].showtime.bookingUrl,
+                tabId: rsv.tabId,
+              });
+            }
+          }
+        }
+
         setAutoBookedData({
           result: topResult,
-          optimalSeatLabels: reservation.seatLabels || [],
-          bookingUrl: reservation.bookingUrl || topResult.showtime.bookingUrl,
-          tabId: reservation.tabId,
+          optimalSeatLabels: reservation?.seatLabels || multiList[0]?.optimalSeatLabels || [],
+          bookingUrl: reservation?.bookingUrl || multiList[0]?.bookingUrl || topResult.showtime.bookingUrl,
+          tabId: reservation?.tabId || multiList[0]?.tabId,
+          multiBookings: multiList.length > 1 ? multiList : undefined,
         });
         setView('auto_booked');
         return;
@@ -447,6 +499,7 @@ export default function App() {
                 optimalSeatLabels={autoBookedData.optimalSeatLabels}
                 bookingUrl={autoBookedData.bookingUrl}
                 tabId={autoBookedData.tabId}
+                multiBookings={autoBookedData.multiBookings}
                 totalOptionsCount={results.length}
                 onViewAllOptions={() => setView('results')}
                 onNewSearch={reset}
@@ -468,6 +521,7 @@ export default function App() {
                 onSubmit={runDiscovery}
                 initialMovie={lastSearch.movie}
                 initialSeats={lastSearch.seats}
+                initialLocationIds={lastSearch.preferredLocationIds}
               />
             )}
           </>

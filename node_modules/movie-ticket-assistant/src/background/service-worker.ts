@@ -12,9 +12,10 @@ import {
   detectSeatBlocks,
   filterBlocksByRequirement,
   selectOptimalSeats,
+  fulfillRequiredSeats,
 } from '../algorithms/seat-block/index';
 import { rankResults, RankingCriteria, RankingWeights } from '../algorithms/ranking/scorer';
-import { Showtime } from '../types/cinema';
+import { Showtime, matchesLocation, getShowtimeLocationId, STAR_CINEPLEX_LOCATIONS } from '../types/cinema';
 import { Seat, SeatBlock, SeatMap } from '../types/seat';
 import { SniperEngine } from '../services/sniper-engine';
 import { SniperConfig } from '../types/sniper';
@@ -44,6 +45,9 @@ export interface ReserveRequest {
   showtime: Showtime;
   seatBlock: SeatBlock;
   requiredSeats: number;
+  candidateBlocks?: SeatBlock[];
+  allowedRows?: string[];
+  openTabActive?: boolean;
 }
 
 export interface ReserveResponse {
@@ -117,6 +121,16 @@ async function runDiscovery(request: DiscoveryRequest): Promise<DiscoveryRespons
   const starShowtimes = allShowtimes.filter(s => s.cinema.id === starAdapter.id);
   let targetShowtimes = starShowtimes.length > 0 ? starShowtimes : allShowtimes;
 
+  // Filter for showtimes that match preferred multiple locations (e.g. Bashundhara City, Sony Square)
+  if (request.criteria?.preferredLocationIds && request.criteria.preferredLocationIds.length > 0) {
+    const locMatches = targetShowtimes.filter(s =>
+      matchesLocation(s, request.criteria!.preferredLocationIds)
+    );
+    if (locMatches.length > 0) {
+      targetShowtimes = locMatches;
+    }
+  }
+
   // Filter for showtimes that match preferred multiple time slots (e.g. afternoon, evening)
   if (request.criteria?.preferredTimes && request.criteria.preferredTimes.length > 0) {
     const timeMatches = targetShowtimes.filter(s =>
@@ -138,10 +152,10 @@ async function runDiscovery(request: DiscoveryRequest): Promise<DiscoveryRespons
   const availableShowtimes = targetShowtimes.filter(s => s.availableSeats >= request.requiredSeats);
   const eligibleShowtimes = availableShowtimes.length > 0 ? availableShowtimes : targetShowtimes;
 
-  // Sort by date, then time, and take top 20 candidate shows for fast seat-map discovery
+  // Sort by date, then time, and take top 25 candidate shows for fast seat-map discovery
   const sortedShowtimes = eligibleShowtimes
     .sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`))
-    .slice(0, 20);
+    .slice(0, 25);
 
   // Step 3: Fetch physical seat maps for each candidate showtime concurrently
   const seatMapPromises = sortedShowtimes.map(showtime => {
@@ -172,7 +186,15 @@ async function runDiscovery(request: DiscoveryRequest): Promise<DiscoveryRespons
       requiredSeats: request.requiredSeats,
       allowedRows,
     });
-    const eligibleBlocks = filterBlocksByRequirement(blocks, request.requiredSeats);
+    let eligibleBlocks = filterBlocksByRequirement(blocks, request.requiredSeats);
+
+    // If no single continuous block has requiredSeats, but available seats exist in allowed rows
+    if (eligibleBlocks.length === 0 && blocks.length > 0) {
+      const fulfilled = fulfillRequiredSeats(blocks, request.requiredSeats, allowedRows);
+      if (fulfilled.length >= Math.min(request.requiredSeats, showtime.availableSeats)) {
+        eligibleBlocks = [blocks[0]];
+      }
+    }
 
     return eligibleBlocks.map(block => ({ showtime, seatBlock: block }));
   });
@@ -212,16 +234,36 @@ async function handleRecheckAndReserve(req: ReserveRequest): Promise<ReserveResp
     }
   }
 
-  // 2. Select the optimal consecutive center seats from the block
-  const optimalSeats = selectOptimalSeats(seatBlock, requiredSeats);
+  // 2. Select the optimal seats (strictly fulfilling requiredSeats)
+  const candidateBlocks = req.candidateBlocks && req.candidateBlocks.length > 0
+    ? req.candidateBlocks
+    : [seatBlock];
+  const optimalSeats = fulfillRequiredSeats(
+    candidateBlocks,
+    requiredSeats,
+    req.allowedRows || DEFAULT_ALLOWED_ROWS
+  );
   const seatLabels = optimalSeats.map(s => s.label);
 
   // 3. Save pending reservation into local storage for guaranteed pickup by content script
   try {
+    const stored = await chrome.storage.local.get(['pendingReservations', 'pendingReservation']);
+    const pendingMap = stored?.pendingReservations || {};
+    pendingMap[showtime.id] = {
+      showId: showtime.id,
+      seatLabels,
+      requiredSeats,
+      allowedRows: req.allowedRows || DEFAULT_ALLOWED_ROWS,
+      autoProceed: true,
+      timestamp: Date.now(),
+    };
     await chrome.storage.local.set({
+      pendingReservations: pendingMap,
       pendingReservation: {
         showId: showtime.id,
         seatLabels,
+        requiredSeats,
+        allowedRows: req.allowedRows || DEFAULT_ALLOWED_ROWS,
         autoProceed: true,
         timestamp: Date.now(),
       },
@@ -230,11 +272,12 @@ async function handleRecheckAndReserve(req: ReserveRequest): Promise<ReserveResp
     console.warn('[Movie Assistant] Could not store pending reservation:', err);
   }
 
-  // 4. Open or focus cinema booking window
+  // 4. Open cinema booking tab
   let tabId: number | undefined;
   if (showtime.bookingUrl) {
     try {
-      const tab = await chrome.tabs.create({ url: showtime.bookingUrl, active: true });
+      const shouldActivate = req.openTabActive !== false;
+      const tab = await chrome.tabs.create({ url: showtime.bookingUrl, active: shouldActivate });
       tabId = tab.id;
 
       // When the tab finishes loading, trigger the content script to select seats
@@ -248,6 +291,8 @@ async function handleRecheckAndReserve(req: ReserveRequest): Promise<ReserveResp
                 type: 'SELECT_AND_RESERVE',
                 payload: {
                   seatLabels,
+                  requiredSeats,
+                  allowedRows: req.allowedRows || DEFAULT_ALLOWED_ROWS,
                   autoProceed: true,
                 },
               }).catch(err => {
@@ -277,10 +322,13 @@ let activePopoutWindowId: number | null = null;
 /**
  * Perform end-to-end background discovery and auto-reservation so execution
  * completes reliably even if the user closes or clicks outside the popup.
+ * Supports multi-location selection by opening separate tabs for each location!
  */
 async function handleAutoDiscoverAndReserve(request: DiscoveryRequest): Promise<{
   discovery: DiscoveryResponse;
   reservation?: ReserveResponse;
+  reservations?: ReserveResponse[];
+  results?: RankedResult[];
 }> {
   const opId = ++currentDiscoveryId;
   const discovery = await runDiscovery(request);
@@ -300,28 +348,79 @@ async function handleAutoDiscoverAndReserve(request: DiscoveryRequest): Promise<
     return { discovery };
   }
 
-  const topResult = discovery.results[0];
-  let reservation: ReserveResponse | undefined;
+  const allowedRows = request.criteria?.allowedRows || DEFAULT_ALLOWED_ROWS;
+  const preferredLocationIds = request.criteria?.preferredLocationIds;
 
-  try {
-    reservation = await handleRecheckAndReserve({
-      showtime: topResult.showtime,
-      seatBlock: topResult.seatBlock,
-      requiredSeats: request.requiredSeats,
-    });
-  } catch (reserveErr) {
-    console.warn('[Movie Assistant] Background auto-reserve error:', reserveErr);
+  // Group discovery results by cinema location
+  const resultsByLocation = new Map<string, RankedResult[]>();
+  for (const res of discovery.results) {
+    const locId = getShowtimeLocationId(res.showtime);
+    const list = resultsByLocation.get(locId) || [];
+    list.push(res);
+    resultsByLocation.set(locId, list);
+  }
+
+  // Determine which results to book:
+  // If multiple locations were selected, pick the #1 top show for EACH selected location!
+  const targetResults: RankedResult[] = [];
+
+  if (preferredLocationIds && preferredLocationIds.length > 1) {
+    for (const locId of preferredLocationIds) {
+      const locList = resultsByLocation.get(locId);
+      if (locList && locList.length > 0) {
+        targetResults.push(locList[0]);
+      }
+    }
+  }
+
+  // Fallback: if no multi-location matches or only 1 location was selected, pick the single top result
+  if (targetResults.length === 0) {
+    targetResults.push(discovery.results[0]);
+  }
+
+  // Open multiple tabs for the selected locations, each reserving the requested seats!
+  const reservations: ReserveResponse[] = [];
+
+  for (let i = 0; i < targetResults.length; i++) {
+    const res = targetResults[i];
+    try {
+      const candidateBlocks = discovery.results
+        .filter(r => r.showtime.id === res.showtime.id)
+        .map(r => r.seatBlock);
+
+      const rsv = await handleRecheckAndReserve({
+        showtime: res.showtime,
+        seatBlock: res.seatBlock,
+        requiredSeats: request.requiredSeats,
+        candidateBlocks,
+        allowedRows,
+        openTabActive: i === 0, // Keep first opened tab in focus
+      });
+      reservations.push(rsv);
+    } catch (reserveErr) {
+      console.warn(`[Movie Assistant] Auto-reserve error for ${res.showtime.cinema.name}:`, reserveErr);
+    }
   }
 
   if (opId !== currentDiscoveryId) {
-    return { discovery, reservation };
+    return {
+      discovery,
+      reservation: reservations[0],
+      reservations,
+      results: targetResults,
+    };
   }
+
+  const primaryReservation = reservations.find(r => r.success) || reservations[0];
+  const primaryResult = targetResults[0];
 
   try {
     await chrome.storage.local.set({
       lastAutoBooked: {
-        result: topResult,
-        reservation,
+        result: primaryResult,
+        reservation: primaryReservation,
+        results: targetResults,
+        reservations,
         timestamp: Date.now(),
       },
     });
@@ -329,7 +428,12 @@ async function handleAutoDiscoverAndReserve(request: DiscoveryRequest): Promise<
     console.warn('[Movie Assistant] Storage save error:', storageErr);
   }
 
-  return { discovery, reservation };
+  return {
+    discovery,
+    reservation: primaryReservation,
+    reservations,
+    results: targetResults,
+  };
 }
 
 // Runtime message routing

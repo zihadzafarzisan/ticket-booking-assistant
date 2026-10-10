@@ -12,9 +12,10 @@ import {
   detectSeatBlocks,
   filterBlocksByRequirement,
   selectOptimalSeats,
+  fulfillRequiredSeats,
 } from '../algorithms/seat-block/index';
 import { rankResults, DEFAULT_WEIGHTS } from '../algorithms/ranking/scorer';
-import { Showtime } from '../types/cinema';
+import { Showtime, matchesLocation } from '../types/cinema';
 import { SeatBlock, Seat } from '../types/seat';
 import {
   SniperConfig,
@@ -311,8 +312,10 @@ export class SniperEngine {
         if (slot !== config.preferredTime) return false;
       }
 
-      // Filter by preferred cinema branch if set
-      if (config.preferredCinemaId && s.cinema.id !== config.preferredCinemaId) {
+      // Filter by preferred cinema branch or locations if set
+      if (config.preferredLocationIds && config.preferredLocationIds.length > 0) {
+        if (!matchesLocation(s, config.preferredLocationIds)) return false;
+      } else if (config.preferredCinemaId && s.cinema.id !== config.preferredCinemaId) {
         return false;
       }
 
@@ -367,7 +370,7 @@ export class SniperEngine {
 
         if (eligibleBlocks.length > 0) {
           const bestBlock = eligibleBlocks[0];
-          const optimalSeats = selectOptimalSeats(bestBlock, requiredSeats);
+          const optimalSeats = fulfillRequiredSeats(eligibleBlocks, requiredSeats, allowedRows);
 
           return {
             found: true,
@@ -377,6 +380,18 @@ export class SniperEngine {
             seatLabels: optimalSeats.map(s => s.label),
             bookingUrl: show.bookingUrl,
           };
+        } else if (allBlocks.length > 0) {
+          const optimalSeats = fulfillRequiredSeats(allBlocks, requiredSeats, allowedRows);
+          if (optimalSeats.length >= requiredSeats) {
+            return {
+              found: true,
+              showtime: show,
+              seatBlock: allBlocks[0],
+              selectedSeats: optimalSeats,
+              seatLabels: optimalSeats.map(s => s.label),
+              bookingUrl: show.bookingUrl,
+            };
+          }
         }
       } catch (seatErr) {
         console.warn('[SniperEngine] Seat map fetch failure for show:', show.id, seatErr);
@@ -424,10 +439,23 @@ export class SniperEngine {
     // Save pending reservation for content script pickup
     if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
       try {
+        const stored = await chrome.storage.local.get(['pendingReservations', 'pendingReservation']);
+        const pendingMap = stored?.pendingReservations || {};
+        pendingMap[showtime.id] = {
+          showId: showtime.id,
+          seatLabels,
+          requiredSeats: this.state.config?.requiredSeats || seatLabels.length,
+          allowedRows: this.state.config?.allowedRows || DEFAULT_ALLOWED_ROWS,
+          autoProceed: true,
+          timestamp: Date.now(),
+        };
         await chrome.storage.local.set({
+          pendingReservations: pendingMap,
           pendingReservation: {
             showId: showtime.id,
             seatLabels,
+            requiredSeats: this.state.config?.requiredSeats || seatLabels.length,
+            allowedRows: this.state.config?.allowedRows || DEFAULT_ALLOWED_ROWS,
             autoProceed: true,
             timestamp: Date.now(),
           },

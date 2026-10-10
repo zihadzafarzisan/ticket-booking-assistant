@@ -1442,3 +1442,129 @@ button.secondary {
   text-align: center;
   line-height: 1.3;
 }
+
+/* Multi-Location Selection Chips */
+.location-chips-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.location-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 9px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.location-chip:hover {
+  border-color: var(--primary);
+  background: rgba(99, 102, 241, 0.08);
+}
+
+.location-chip.is-active {
+  background: rgba(99, 102, 241, 0.18);
+  border-color: var(--primary);
+  color: #818cf8;
+  font-weight: 600;
+}
+
+.location-chip .loc-bullet {
+  font-size: 10px;
+  opacity: 0.8;
+}
+
+.location-chip.is-active .loc-bullet {
+  color: #818cf8;
+  font-weight: bold;
+}
+
+/* Multi-Location Auto-Booked View */
+.multi-booking-view {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.multi-locations-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.multi-location-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--primary);
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: border-color 0.2s ease;
+}
+
+.multi-location-card:hover {
+  border-color: var(--primary);
+}
+
+.card-top-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.location-branch-pill {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.location-price-tag {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.card-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.card-seats-row {
+  display: flex;
+  align-items: center;
+}
+
+.card-seats-row .seats-tag {
+  background: rgba(34, 197, 94, 0.12);
+  border: 1px solid rgba(34, 197, 94, 0.4);
+  color: #4ade80;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 5px;
+  width: 100%;
+}
+
+.switch-tab-btn {
+  width: 100%;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 6px;
+  margin-top: 2px;
+}

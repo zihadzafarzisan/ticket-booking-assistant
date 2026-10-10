@@ -6,6 +6,7 @@
  */
 import React, { useState } from 'react';
 import { TimeSlot, TIME_SLOT_CONFIG, DEFAULT_ALLOWED_ROWS } from '../../utils/date';
+import { STAR_CINEPLEX_LOCATIONS, DHAKA_LOCATION_IDS } from '../../types/cinema';
 
 interface SearchFormProps {
   onSubmit: (params: {
@@ -13,21 +14,41 @@ interface SearchFormProps {
     seats: number;
     preferredTimes?: TimeSlot[];
     allowedRows?: string[];
+    preferredLocationIds?: string[];
   }) => void;
   initialMovie?: string;
   initialSeats?: number;
+  initialLocationIds?: string[];
 }
 
 const ALL_TIME_SLOTS: TimeSlot[] = ['morning', 'afternoon', 'evening', 'night'];
 const ALL_TARGET_ROWS = ['B', 'C', 'D', 'E', 'F'];
 
-export function SearchForm({ onSubmit, initialMovie = '', initialSeats = 2 }: SearchFormProps) {
+export function SearchForm({
+  onSubmit,
+  initialMovie = '',
+  initialSeats = 2,
+  initialLocationIds,
+}: SearchFormProps) {
   const [movie, setMovie] = useState(initialMovie);
   const [seats, setSeats] = useState(initialSeats);
   const [preferredTimes, setPreferredTimes] = useState<TimeSlot[]>(['afternoon', 'evening']);
   const [allowedRows, setAllowedRows] = useState<string[]>(['B', 'C', 'D', 'E', 'F']);
+  const [preferredLocationIds, setPreferredLocationIds] = useState<string[]>(
+    initialLocationIds || ['bashundhara', 'sony-square', 'sks-tower', 'shimanto-shambhar']
+  );
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [date, setDate] = useState('');
+
+  const toggleLocation = (locId: string) => {
+    setPreferredLocationIds(prev => {
+      if (prev.includes(locId)) {
+        return prev.filter(id => id !== locId);
+      } else {
+        return [...prev, locId];
+      }
+    });
+  };
 
   const toggleTimeSlot = (slot: TimeSlot) => {
     setPreferredTimes(prev => {
@@ -57,6 +78,7 @@ export function SearchForm({ onSubmit, initialMovie = '', initialSeats = 2 }: Se
       seats,
       preferredTimes: preferredTimes.length > 0 ? preferredTimes : undefined,
       allowedRows: allowedRows.length > 0 ? allowedRows : DEFAULT_ALLOWED_ROWS,
+      preferredLocationIds: preferredLocationIds.length > 0 ? preferredLocationIds : undefined,
     });
   };
 
@@ -88,6 +110,7 @@ export function SearchForm({ onSubmit, initialMovie = '', initialSeats = 2 }: Se
                     seats,
                     preferredTimes: preferredTimes.length > 0 ? preferredTimes : undefined,
                     allowedRows: allowedRows.length > 0 ? allowedRows : DEFAULT_ALLOWED_ROWS,
+                    preferredLocationIds: preferredLocationIds.length > 0 ? preferredLocationIds : undefined,
                   });
                 }}
               >
@@ -109,6 +132,60 @@ export function SearchForm({ onSubmit, initialMovie = '', initialSeats = 2 }: Se
           value={seats}
           onChange={e => setSeats(Math.max(1, parseInt(e.target.value) || 1))}
         />
+      </div>
+
+      {/* Multiple Locations Selection */}
+      <div className="form-group">
+        <div className="section-label-row">
+          <label>Locations ({preferredLocationIds.length} selected)</label>
+          <div className="quick-slot-actions">
+            <button
+              type="button"
+              className="slot-quick-link"
+              onClick={() => setPreferredLocationIds([...DHAKA_LOCATION_IDS])}
+            >
+              All Dhaka
+            </button>
+            <button
+              type="button"
+              className="slot-quick-link"
+              onClick={() => setPreferredLocationIds(STAR_CINEPLEX_LOCATIONS.map(l => l.id))}
+            >
+              All Branches
+            </button>
+            <button
+              type="button"
+              className="slot-quick-link"
+              onClick={() => setPreferredLocationIds([])}
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+        <div className="location-chips-container">
+          {STAR_CINEPLEX_LOCATIONS.map(loc => {
+            const isSelected = preferredLocationIds.includes(loc.id);
+            return (
+              <button
+                key={loc.id}
+                type="button"
+                className={`location-chip ${isSelected ? 'is-active' : ''}`}
+                onClick={() => toggleLocation(loc.id)}
+                title={loc.name}
+              >
+                <span className="loc-bullet">{isSelected ? '✓' : '+'}</span>
+                <span className="loc-name">{loc.shortName}</span>
+              </button>
+            );
+          })}
+        </div>
+        <p className="field-hint">
+          {preferredLocationIds.length > 1
+            ? `Multiple tabs will open simultaneously (one per branch) with ${seats} seats selected in each tab.`
+            : preferredLocationIds.length === 1
+            ? `Single branch selected. Bot will open a booking tab with ${seats} seats.`
+            : 'All branches will be searched.'}
+        </p>
       </div>
 
       {/* Target Rows Selection (B, C, D, E, F) */}
@@ -218,7 +295,9 @@ export function SearchForm({ onSubmit, initialMovie = '', initialSeats = 2 }: Se
         ⚡ Auto-Book Available Seats
       </button>
       <p className="auto-book-helper">
-        Continuous seats in rows B, C, D, E, F matching your time slots will be selected and routed to payment.
+        {preferredLocationIds.length > 1
+          ? `Continuous seats in rows B, C, D, E, F will be booked. Multiple tabs will open for each selected branch with ${seats} seats each.`
+          : `Continuous seats in rows B, C, D, E, F matching your time slots will be selected and routed to payment.`}
       </p>
     </form>
   );

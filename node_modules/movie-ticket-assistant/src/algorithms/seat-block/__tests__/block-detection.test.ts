@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { detectSeatBlocks, filterBlocksByRequirement, selectOptimalSeats } from '../index';
+import { detectSeatBlocks, filterBlocksByRequirement, selectOptimalSeats, fulfillRequiredSeats } from '../index';
 import { Seat, SeatMap, SeatStatus } from '../../../types/seat';
 
 function createMockSeat(row: string, number: number, status: SeatStatus = 'available'): Seat {
@@ -397,6 +397,54 @@ describe('selectOptimalSeats', () => {
 
       expect(blocks).toHaveLength(1);
       expect(blocks[0].row).toBe('Row B');
+    });
+  });
+
+  describe('fulfillRequiredSeats and large seat counts (9 seats)', () => {
+    it('should select exactly 9 continuous centered seats when a single row has >= 9 seats', () => {
+      const seatsRowC = Array.from({ length: 18 }, (_, i) => createMockSeat('C', i + 1));
+      const seatMap = createMockSeatMap({ C: seatsRowC });
+      const blocks = detectSeatBlocks(seatMap, { requiredSeats: 9, allowedRows: ['B', 'C', 'D', 'E', 'F'] });
+
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0].capacity).toBe(18);
+
+      const fulfilled = fulfillRequiredSeats(blocks, 9, ['B', 'C', 'D', 'E', 'F']);
+      expect(fulfilled).toHaveLength(9);
+      // Verify contiguous center seats
+      const numbers = fulfilled.map(s => s.number);
+      for (let i = 1; i < numbers.length; i++) {
+        expect(numbers[i] - numbers[i - 1]).toBe(1);
+      }
+    });
+
+    it('should combine blocks across rows B-F to return exactly 9 seats when single blocks are smaller', () => {
+      // Row C has 5 seats, Row D has 6 seats (neither can fulfill 9 alone)
+      const seatsRowC = Array.from({ length: 5 }, (_, i) => createMockSeat('C', i + 1));
+      const seatsRowD = Array.from({ length: 6 }, (_, i) => createMockSeat('D', i + 1));
+      const seatMap = createMockSeatMap({ C: seatsRowC, D: seatsRowD });
+      const blocks = detectSeatBlocks(seatMap, { requiredSeats: 5, allowedRows: ['B', 'C', 'D', 'E', 'F'] });
+
+      expect(blocks).toHaveLength(2);
+
+      const fulfilled = fulfillRequiredSeats(blocks, 9, ['B', 'C', 'D', 'E', 'F']);
+      expect(fulfilled).toHaveLength(9);
+
+      // Verify no duplicates
+      const uniqueIds = new Set(fulfilled.map(s => s.id));
+      expect(uniqueIds.size).toBe(9);
+
+      // Seats are only from allowed rows C and D
+      expect(fulfilled.every(s => s.row === 'C' || s.row === 'D')).toBe(true);
+    });
+
+    it('should safely clamp selectOptimalSeats when count equals block capacity', () => {
+      const seats = Array.from({ length: 9 }, (_, i) => createMockSeat('B', i + 1));
+      const seatMap = createMockSeatMap({ B: seats });
+      const blocks = detectSeatBlocks(seatMap, { requiredSeats: 9 });
+
+      const optimal = selectOptimalSeats(blocks[0], 9);
+      expect(optimal).toHaveLength(9);
     });
   });
 });

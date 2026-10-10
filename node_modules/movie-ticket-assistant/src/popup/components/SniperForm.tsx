@@ -14,6 +14,7 @@ import {
   TIME_SLOT_CONFIG,
   DEFAULT_ALLOWED_ROWS,
 } from '../../utils/date';
+import { STAR_CINEPLEX_LOCATIONS, DHAKA_LOCATION_IDS } from '../../types/cinema';
 
 interface SniperFormProps {
   onArmSniper: (config: SniperConfig) => void;
@@ -47,7 +48,18 @@ export function SniperForm({
   const [preferredRow, setPreferredRow] = useState<'any' | 'center' | 'back' | 'front'>('center');
   const [preferredTimes, setPreferredTimes] = useState<TimeSlot[]>(['afternoon', 'evening']);
   const [allowedRows, setAllowedRows] = useState<string[]>(['B', 'C', 'D', 'E', 'F']);
+  const [preferredLocationIds, setPreferredLocationIds] = useState<string[]>(['bashundhara', 'sony-square', 'sks-tower', 'shimanto-shambhar']);
   const [autoRefreshPage, setAutoRefreshPage] = useState(true);
+
+  const toggleLocation = (locId: string) => {
+    setPreferredLocationIds(prev => {
+      if (prev.includes(locId)) {
+        return prev.filter(id => id !== locId);
+      } else {
+        return [...prev, locId];
+      }
+    });
+  };
 
   const toggleTimeSlot = (slot: TimeSlot) => {
     setPreferredTimes(prev => {
@@ -85,6 +97,7 @@ export function SniperForm({
       preferredTime: preferredTimes.length === 1 ? preferredTimes[0] : 'any',
       preferredTimes: preferredTimes.length > 0 ? preferredTimes : undefined,
       allowedRows: allowedRows.length > 0 ? allowedRows : DEFAULT_ALLOWED_ROWS,
+      preferredLocationIds: preferredLocationIds.length > 0 ? preferredLocationIds : undefined,
       dropTime: useScheduledDrop && dropTime ? dropTime : undefined,
       autoOpenTab: true,
       autoRefreshPage,
@@ -235,6 +248,53 @@ export function SniperForm({
 
       {showPreferences && (
         <div className="advanced-filters">
+          {/* Target Locations Selection */}
+          <div className="form-group">
+            <div className="section-label-row">
+              <label>Target Branches ({preferredLocationIds.length} selected)</label>
+              <div className="quick-slot-actions">
+                <button
+                  type="button"
+                  className="slot-quick-link"
+                  onClick={() => setPreferredLocationIds([...DHAKA_LOCATION_IDS])}
+                >
+                  All Dhaka
+                </button>
+                <button
+                  type="button"
+                  className="slot-quick-link"
+                  onClick={() => setPreferredLocationIds(STAR_CINEPLEX_LOCATIONS.map(l => l.id))}
+                >
+                  All Branches
+                </button>
+                <button
+                  type="button"
+                  className="slot-quick-link"
+                  onClick={() => setPreferredLocationIds([])}
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+            <div className="location-chips-container">
+              {STAR_CINEPLEX_LOCATIONS.map(loc => {
+                const isSelected = preferredLocationIds.includes(loc.id);
+                return (
+                  <button
+                    key={loc.id}
+                    type="button"
+                    className={`location-chip ${isSelected ? 'is-active' : ''}`}
+                    onClick={() => toggleLocation(loc.id)}
+                    title={loc.name}
+                  >
+                    <span className="loc-bullet">{isSelected ? '✓' : '+'}</span>
+                    <span className="loc-name">{loc.shortName}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           {/* Target Rows Selection (B, C, D, E, F) */}
           <div className="form-group">
             <div className="section-label-row">

@@ -39,6 +39,7 @@ export interface SniperConfig {
   preferredRow?: 'any' | 'center' | 'back' | 'front';
   allowedRows?: string[]; // e.g. ['B', 'C', 'D', 'E', 'F']
   preferredCinemaId?: string;
+  preferredLocationIds?: string[]; // Multiple branch IDs e.g. ['bashundhara', 'sony-square']
   dropTime?: string; // Optional ISO datetime string when drop starts (e.g. "2026-10-09T23:55:00")
   autoOpenTab: boolean;
   autoRefreshPage: boolean;

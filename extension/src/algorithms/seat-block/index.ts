@@ -212,22 +212,78 @@ export function selectOptimalSeats(
   const available = block.seats.filter(s => s.status === 'available');
 
   if (available.length <= count) {
-    return available;
+    return [...available];
   }
 
   // Find the center of the block
   const centerIndex = Math.floor(available.length / 2);
 
-  // Select seats centered around the middle
-  const result: Seat[] = [];
-  const startIndex = centerIndex - Math.floor(count / 2);
+  // Select seats centered around the middle, with boundary clamping
+  let startIndex = centerIndex - Math.floor(count / 2);
+  if (startIndex < 0) startIndex = 0;
+  if (startIndex + count > available.length) {
+    startIndex = Math.max(0, available.length - count);
+  }
 
-  for (let i = 0; i < count; i++) {
-    const idx = startIndex + i;
-    if (idx >= 0 && idx < available.length) {
-      result.push(available[idx]);
+  return available.slice(startIndex, startIndex + count);
+}
+
+/**
+ * Fulfill the exact required seat count across available blocks.
+ * If a single block has enough seats (capacity >= count), selects from it centered.
+ * If no single block has enough seats, combines seats across the highest-quality
+ * blocks (preferring allowed rows B, C, D, E, F) to strictly fulfill the requested count.
+ */
+export function fulfillRequiredSeats(
+  blocks: SeatBlock[],
+  count: number,
+  allowedRows?: string[]
+): Seat[] {
+  if (!blocks || blocks.length === 0 || count <= 0) return [];
+
+  // Filter for allowed rows if provided
+  let candidateBlocks = blocks;
+  if (allowedRows && allowedRows.length > 0) {
+    const rowFiltered = blocks.filter(b => isRowAllowed(b.row, allowedRows));
+    if (rowFiltered.length > 0) {
+      candidateBlocks = rowFiltered;
     }
   }
 
-  return result;
+  // 1. Look for a single block that satisfies the entire count
+  const sufficientBlocks = candidateBlocks.filter(b => b.capacity >= count);
+  if (sufficientBlocks.length > 0) {
+    // Pick the block with highest centerScore
+    const best = [...sufficientBlocks].sort((a, b) => b.centerScore - a.centerScore)[0];
+    return selectOptimalSeats(best, count);
+  }
+
+  // 2. If no single block is >= count, combine seats across blocks
+  // Sort blocks by capacity and centerScore descending
+  const sortedBlocks = [...candidateBlocks].sort((a, b) => {
+    if (b.capacity !== a.capacity) {
+      return b.capacity - a.capacity;
+    }
+    return b.centerScore - a.centerScore;
+  });
+
+  const selectedSeats: Seat[] = [];
+  const selectedSeatIds = new Set<string>();
+
+  for (const block of sortedBlocks) {
+    if (selectedSeats.length >= count) break;
+    const remainingNeeded = count - selectedSeats.length;
+
+    // Pick seats from this block (prefer center if taking partial block)
+    const blockSeats = selectOptimalSeats(block, remainingNeeded);
+    for (const seat of blockSeats) {
+      if (!selectedSeatIds.has(seat.id)) {
+        selectedSeatIds.add(seat.id);
+        selectedSeats.push(seat);
+        if (selectedSeats.length >= count) break;
+      }
+    }
+  }
+
+  return selectedSeats;
 }

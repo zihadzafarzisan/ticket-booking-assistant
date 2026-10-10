@@ -52,19 +52,32 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 async function checkForPendingReservation() {
   if (!window.location.pathname.includes('/seats')) return;
 
+  const showMatch = window.location.pathname.match(/\/shows\/([^/]+)\/seats/);
+  const currentShowId = showMatch ? showMatch[1] : null;
+
   try {
-    const data = await chrome.storage.local.get('pendingReservation');
-    const pending = data?.pendingReservation;
-    if (pending && Array.isArray(pending.seatLabels) && pending.seatLabels.length > 0) {
-      // Check if recent (within 60 seconds)
-      if (Date.now() - (pending.timestamp || 0) < 60000) {
-        console.log('[Movie Assistant] Found active pending reservation for seats:', pending.seatLabels);
-        // Clear pending to avoid re-triggering on manual refresh
-        await chrome.storage.local.remove('pendingReservation');
-        // Execute automatic selection & reservation
+    const data = await chrome.storage.local.get(['pendingReservations', 'pendingReservation']);
+    let targetReservation: any = null;
+
+    if (currentShowId && data.pendingReservations && data.pendingReservations[currentShowId]) {
+      targetReservation = data.pendingReservations[currentShowId];
+      // Remove this reservation from storage to avoid re-triggering, while preserving others
+      const updatedMap = { ...data.pendingReservations };
+      delete updatedMap[currentShowId];
+      await chrome.storage.local.set({ pendingReservations: updatedMap });
+    } else if (data.pendingReservation) {
+      targetReservation = data.pendingReservation;
+      await chrome.storage.local.remove('pendingReservation');
+    }
+
+    if (targetReservation && Array.isArray(targetReservation.seatLabels) && targetReservation.seatLabels.length > 0) {
+      if (Date.now() - (targetReservation.timestamp || 0) < 60000) {
+        console.log('[Movie Assistant] Found active pending reservation for seats:', targetReservation.seatLabels);
         await handleSeatSelectionAndReservation({
-          seatLabels: pending.seatLabels,
+          seatLabels: targetReservation.seatLabels,
+          requiredSeats: targetReservation.requiredSeats || targetReservation.seatLabels.length,
           autoProceed: true,
+          allowedRows: targetReservation.allowedRows || ['B', 'C', 'D', 'E', 'F'],
         });
       }
     }
@@ -74,16 +87,32 @@ async function checkForPendingReservation() {
 }
 
 /**
+ * Dispatch realistic user mouse click sequence for modern React DOM
+ */
+function dispatchHumanClick(el: HTMLElement) {
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window }));
+  el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+  el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
+  el.click();
+}
+
+/**
  * Automate selecting the target seats and advancing to checkout/payment
+ * Guarantees that exactly requiredSeats (up to 10) are selected
  */
 async function handleSeatSelectionAndReservation(payload: {
   seatLabels: string[];
+  requiredSeats?: number;
   autoProceed?: boolean;
+  allowedRows?: string[];
 }): Promise<{ success: boolean; clickedSeats: string[]; proceedClicked: boolean }> {
   const { seatLabels, autoProceed = true } = payload;
+  const targetCount = payload.requiredSeats || seatLabels.length;
+  const allowedRows = payload.allowedRows || ['B', 'C', 'D', 'E', 'F'];
   const clickedSeats: string[] = [];
 
-  console.log('[Movie Assistant] Attempting automated seat selection for:', seatLabels);
+  console.log(`[Movie Assistant] Attempting automated seat selection for ${targetCount} seats:`, seatLabels);
 
   // Check if online sales for this show are closed
   if (
@@ -101,20 +130,63 @@ async function handleSeatSelectionAndReservation(payload: {
   // Wait for seat map elements or SVG to appear in DOM
   await waitForSeatElements(12000);
 
+  // Phase 1: Click the designated target seats
   for (const label of seatLabels) {
+    if (clickedSeats.length >= targetCount) break;
     const el = findSeatElement(label);
     if (el) {
-      // Simulate real user click
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      el.click();
+      dispatchHumanClick(el);
       clickedSeats.push(label);
-      console.log(`[Movie Assistant] Clicked seat: ${label}`);
-      // Small interval for React state update
-      await new Promise(r => setTimeout(r, 250));
+      console.log(`[Movie Assistant] Clicked seat: ${label} (${clickedSeats.length}/${targetCount})`);
+      await new Promise(r => setTimeout(r, 220));
     } else {
       console.warn(`[Movie Assistant] Could not find seat element for label: ${label}`);
     }
   }
+
+  // Phase 2: Live DOM fallback if fewer seats were clicked than required
+  if (clickedSeats.length < targetCount) {
+    console.log(`[Movie Assistant] Need ${targetCount - clickedSeats.length} more seat(s) in rows ${allowedRows.join(', ')}...`);
+    const allSeatElements = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        '[data-seat-id], [role="gridcell"], [data-seat-label], [data-testid*="seat"], button[aria-label*="seat"], button[aria-label*="Seat"]'
+      )
+    );
+
+    for (const el of allSeatElements) {
+      if (clickedSeats.length >= targetCount) break;
+
+      // Skip non-interactive or already occupied/selected elements
+      if (
+        el.hasAttribute('disabled') ||
+        el.getAttribute('aria-disabled') === 'true' ||
+        el.classList.contains('occupied') ||
+        el.classList.contains('booked') ||
+        el.classList.contains('sold') ||
+        el.classList.contains('unavailable') ||
+        el.classList.contains('selected')
+      ) {
+        continue;
+      }
+
+      // Check row label
+      const seatInfo = extractSeatInfoFromElement(el);
+      if (!seatInfo || !allowedRows.includes(seatInfo.row)) {
+        continue;
+      }
+
+      if (clickedSeats.includes(seatInfo.label)) {
+        continue;
+      }
+
+      dispatchHumanClick(el);
+      clickedSeats.push(seatInfo.label);
+      console.log(`[Movie Assistant] Fallback clicked available seat: ${seatInfo.label} (${clickedSeats.length}/${targetCount})`);
+      await new Promise(r => setTimeout(r, 220));
+    }
+  }
+
+  console.log(`[Movie Assistant] Total seats selected: ${clickedSeats.length}/${targetCount}`);
 
   let proceedClicked = false;
   if (autoProceed && clickedSeats.length > 0) {
@@ -128,6 +200,34 @@ async function handleSeatSelectionAndReservation(payload: {
     clickedSeats,
     proceedClicked,
   };
+}
+
+/**
+ * Extract row and seat label from a seat element
+ */
+function extractSeatInfoFromElement(el: HTMLElement): { row: string; label: string } | null {
+  const dataId = (el.getAttribute('data-seat-id') || el.getAttribute('data-seat-label') || '').trim().toUpperCase();
+  if (dataId) {
+    const match = dataId.match(/^([A-Z]+)(\d+)$/);
+    if (match) return { row: match[1], label: dataId };
+  }
+
+  const aria = (el.getAttribute('aria-label') || '').toUpperCase();
+  const rowMatch = aria.match(/ROW:?\s*([A-Z]+)/);
+  const seatMatch = aria.match(/SEAT:?\s*([A-Z0-9]+)/);
+  if (rowMatch && seatMatch) {
+    const row = rowMatch[1];
+    const sNum = seatMatch[1].replace(/^[A-Z]+/, '');
+    return { row, label: `${row}${sNum}` };
+  }
+
+  const text = (el.textContent || '').trim().toUpperCase();
+  const textMatch = text.match(/^([A-Z]+)(\d+)$/);
+  if (textMatch) {
+    return { row: textMatch[1], label: text };
+  }
+
+  return null;
 }
 
 /**
