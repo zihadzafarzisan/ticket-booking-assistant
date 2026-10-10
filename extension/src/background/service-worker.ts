@@ -13,13 +13,14 @@ import {
   filterBlocksByRequirement,
   selectOptimalSeats,
   fulfillRequiredSeats,
+  createCompositeSeatBlock,
 } from '../algorithms/seat-block/index';
 import { rankResults, RankingCriteria, RankingWeights } from '../algorithms/ranking/scorer';
 import { Showtime, matchesLocation, getShowtimeLocationId, STAR_CINEPLEX_LOCATIONS } from '../types/cinema';
 import { Seat, SeatBlock, SeatMap } from '../types/seat';
 import { SniperEngine } from '../services/sniper-engine';
 import { SniperConfig } from '../types/sniper';
-import { getTimeSlot, DEFAULT_ALLOWED_ROWS } from '../utils/date';
+import { getTimeSlot, DEFAULT_ALLOWED_ROWS, isRowAllowed } from '../utils/date';
 
 export interface DiscoveryRequest {
   movieName: string;
@@ -152,10 +153,31 @@ async function runDiscovery(request: DiscoveryRequest): Promise<DiscoveryRespons
   const availableShowtimes = targetShowtimes.filter(s => s.availableSeats >= request.requiredSeats);
   const eligibleShowtimes = availableShowtimes.length > 0 ? availableShowtimes : targetShowtimes;
 
-  // Sort by date, then time, and take top 25 candidate shows for fast seat-map discovery
-  const sortedShowtimes = eligibleShowtimes
-    .sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`))
-    .slice(0, 25);
+  // Ensure balanced candidate showtimes when multiple preferred locations are selected
+  let sortedShowtimes: Showtime[] = [];
+  if (request.criteria?.preferredLocationIds && request.criteria.preferredLocationIds.length > 1) {
+    const locMap = new Map<string, Showtime[]>();
+    for (const show of eligibleShowtimes) {
+      const locId = getShowtimeLocationId(show);
+      const list = locMap.get(locId) || [];
+      list.push(show);
+      locMap.set(locId, list);
+    }
+    for (const locId of request.criteria.preferredLocationIds) {
+      const shows = locMap.get(locId) || [];
+      shows.sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`));
+      sortedShowtimes.push(...shows.slice(0, 6));
+    }
+    if (sortedShowtimes.length === 0) {
+      sortedShowtimes = eligibleShowtimes
+        .sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`))
+        .slice(0, 25);
+    }
+  } else {
+    sortedShowtimes = eligibleShowtimes
+      .sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`))
+      .slice(0, 25);
+  }
 
   // Step 3: Fetch physical seat maps for each candidate showtime concurrently
   const seatMapPromises = sortedShowtimes.map(showtime => {
@@ -180,19 +202,27 @@ async function runDiscovery(request: DiscoveryRequest): Promise<DiscoveryRespons
     : DEFAULT_ALLOWED_ROWS;
 
   // Step 4 & 5: Detect maximal continuous blocks and filter by requirement
-  // Zero overlapping combinations: each maximal block is presented once
+  // If no single row block has requiredSeats (e.g. 20 seats), combine blocks into a composite block
   const eligible = seatMapResults.flatMap(({ showtime, seatMap }) => {
-    const blocks = detectSeatBlocks(seatMap, {
+    const allBlocksInMap = detectSeatBlocks(seatMap, {
       requiredSeats: request.requiredSeats,
-      allowedRows,
     });
-    let eligibleBlocks = filterBlocksByRequirement(blocks, request.requiredSeats);
+    const blocksInAllowedRows = allBlocksInMap.filter(b => isRowAllowed(b.row, allowedRows));
 
-    // If no single continuous block has requiredSeats, but available seats exist in allowed rows
-    if (eligibleBlocks.length === 0 && blocks.length > 0) {
-      const fulfilled = fulfillRequiredSeats(blocks, request.requiredSeats, allowedRows);
-      if (fulfilled.length >= Math.min(request.requiredSeats, showtime.availableSeats)) {
-        eligibleBlocks = [blocks[0]];
+    let eligibleBlocks = filterBlocksByRequirement(blocksInAllowedRows, request.requiredSeats);
+
+    // If no single continuous block in allowedRows meets requirement, check entire hall
+    if (eligibleBlocks.length === 0) {
+      eligibleBlocks = filterBlocksByRequirement(allBlocksInMap, request.requiredSeats);
+    }
+
+    // If no single block has requiredSeats anywhere (e.g. requesting 20 seats where rows only have 12-16 seats):
+    // Combine seats across blocks to strictly fulfill the requested seat count!
+    if (eligibleBlocks.length === 0 && allBlocksInMap.length > 0) {
+      const fulfilled = fulfillRequiredSeats(allBlocksInMap, request.requiredSeats, allowedRows);
+      if (fulfilled.length > 0) {
+        const composite = createCompositeSeatBlock(fulfilled, request.requiredSeats);
+        eligibleBlocks = [composite];
       }
     }
 
@@ -235,14 +265,31 @@ async function handleRecheckAndReserve(req: ReserveRequest): Promise<ReserveResp
   }
 
   // 2. Select the optimal seats (strictly fulfilling requiredSeats)
-  const candidateBlocks = req.candidateBlocks && req.candidateBlocks.length > 0
+  let candidateBlocks = req.candidateBlocks && req.candidateBlocks.length > 0
     ? req.candidateBlocks
     : [seatBlock];
-  const optimalSeats = fulfillRequiredSeats(
+  let optimalSeats = fulfillRequiredSeats(
     candidateBlocks,
     requiredSeats,
     req.allowedRows || DEFAULT_ALLOWED_ROWS
   );
+
+  // If candidateBlocks did not have enough seats to reach requiredSeats (e.g. single partial block was passed),
+  // fetch the full hall seat map and fulfill all requiredSeats across the hall!
+  if (optimalSeats.length < requiredSeats) {
+    try {
+      const adapter = adapterRegistry.get(showtime.cinema.id) || starAdapter;
+      const fullMap = await adapter.getSeatMap(showtime);
+      const allBlocks = detectSeatBlocks(fullMap, { requiredSeats });
+      const fullFulfilled = fulfillRequiredSeats(allBlocks, requiredSeats, req.allowedRows);
+      if (fullFulfilled.length > optimalSeats.length) {
+        optimalSeats = fullFulfilled;
+      }
+    } catch (err) {
+      console.warn('[Movie Assistant] Could not fetch fallback seat map in recheck:', err);
+    }
+  }
+
   const seatLabels = optimalSeats.map(s => s.label);
 
   // 3. Save pending reservation into local storage for guaranteed pickup by content script

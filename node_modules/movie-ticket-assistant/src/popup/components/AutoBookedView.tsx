@@ -83,7 +83,7 @@ export function AutoBookedView({
 
                 <div className="card-seats-row">
                   <span className="seats-tag">
-                    💺 Row {b.result.seatBlock.row} • {b.optimalSeatLabels.join(', ')} ({requiredSeats} seats)
+                    💺 {b.result.seatBlock.row.includes(',') ? `Rows ${b.result.seatBlock.row}` : `Row ${b.result.seatBlock.row}`} • {b.optimalSeatLabels.join(', ')} ({b.optimalSeatLabels.length} seats)
                   </span>
                 </div>
 
@@ -173,7 +173,7 @@ export function AutoBookedView({
         <div className="detail-row seat-highlight-row">
           <span className="detail-label">💺 Selected Seats</span>
           <span className="detail-value seats-tag">
-            Row {seatBlock.row} • {optimalSeatLabels.join(', ')} ({requiredSeats} together)
+            {seatBlock.row.includes(',') ? `Rows ${seatBlock.row}` : `Row ${seatBlock.row}`} • {optimalSeatLabels.join(', ')} ({optimalSeatLabels.length} seats)
           </span>
         </div>
 

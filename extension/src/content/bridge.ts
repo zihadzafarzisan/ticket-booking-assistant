@@ -97,11 +97,74 @@ function dispatchHumanClick(el: HTMLElement) {
   el.click();
 }
 
+let activeSelectionPromise: Promise<{ success: boolean; clickedSeats: string[]; proceedClicked: boolean }> | null = null;
+let lastCompletedSelection: { timestamp: number; seatLabels: string[] } | null = null;
+
 /**
- * Automate selecting the target seats and advancing to checkout/payment
- * Guarantees that exactly requiredSeats (up to 10) are selected
+ * Check if a seat element is already selected in DOM
+ */
+function isSeatElementSelected(el: HTMLElement): boolean {
+  if (
+    el.classList.contains('selected') ||
+    el.classList.contains('is-selected') ||
+    el.classList.contains('active') ||
+    el.getAttribute('aria-selected') === 'true' ||
+    el.getAttribute('aria-checked') === 'true' ||
+    el.getAttribute('data-selected') === 'true'
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Automate selecting target seats with concurrency protection against duplicate runs
  */
 async function handleSeatSelectionAndReservation(payload: {
+  seatLabels: string[];
+  requiredSeats?: number;
+  autoProceed?: boolean;
+  allowedRows?: string[];
+}): Promise<{ success: boolean; clickedSeats: string[]; proceedClicked: boolean }> {
+  // If an identical selection just completed in the last 15 seconds, return cached result
+  if (
+    lastCompletedSelection &&
+    Date.now() - lastCompletedSelection.timestamp < 15000 &&
+    payload.seatLabels.every(l => lastCompletedSelection!.seatLabels.includes(l))
+  ) {
+    console.log('[Movie Assistant] Seat selection already completed recently. Skipping duplicate.');
+    return {
+      success: true,
+      clickedSeats: lastCompletedSelection.seatLabels,
+      proceedClicked: true,
+    };
+  }
+
+  // If already running, await the existing execution
+  if (activeSelectionPromise) {
+    console.log('[Movie Assistant] Seat selection already in progress, awaiting existing run...');
+    return activeSelectionPromise;
+  }
+
+  activeSelectionPromise = executeSeatSelection(payload);
+  try {
+    const result = await activeSelectionPromise;
+    if (result.success) {
+      lastCompletedSelection = {
+        timestamp: Date.now(),
+        seatLabels: result.clickedSeats,
+      };
+    }
+    return result;
+  } finally {
+    activeSelectionPromise = null;
+  }
+}
+
+/**
+ * Core seat selection execution logic
+ */
+async function executeSeatSelection(payload: {
   seatLabels: string[];
   requiredSeats?: number;
   autoProceed?: boolean;
@@ -135,43 +198,41 @@ async function handleSeatSelectionAndReservation(payload: {
     if (clickedSeats.length >= targetCount) break;
     const el = findSeatElement(label);
     if (el) {
-      dispatchHumanClick(el);
-      clickedSeats.push(label);
-      console.log(`[Movie Assistant] Clicked seat: ${label} (${clickedSeats.length}/${targetCount})`);
-      await new Promise(r => setTimeout(r, 220));
+      if (isSeatElementSelected(el)) {
+        console.log(`[Movie Assistant] Seat ${label} is already selected in DOM.`);
+        clickedSeats.push(label);
+      } else {
+        dispatchHumanClick(el);
+        clickedSeats.push(label);
+        console.log(`[Movie Assistant] Clicked seat: ${label} (${clickedSeats.length}/${targetCount})`);
+        await new Promise(r => setTimeout(r, 180));
+      }
     } else {
       console.warn(`[Movie Assistant] Could not find seat element for label: ${label}`);
     }
   }
 
-  // Phase 2: Live DOM fallback if fewer seats were clicked than required
-  if (clickedSeats.length < targetCount) {
-    console.log(`[Movie Assistant] Need ${targetCount - clickedSeats.length} more seat(s) in rows ${allowedRows.join(', ')}...`);
-    const allSeatElements = Array.from(
-      document.querySelectorAll<HTMLElement>(
-        '[data-seat-id], [role="gridcell"], [data-seat-label], [data-testid*="seat"], button[aria-label*="seat"], button[aria-label*="Seat"]'
-      )
-    );
-
-    for (const el of allSeatElements) {
+  // Helper function to click available seats from candidate elements
+  const clickAvailableFromList = async (elements: HTMLElement[], filterRows?: string[]) => {
+    for (const el of elements) {
       if (clickedSeats.length >= targetCount) break;
 
-      // Skip non-interactive or already occupied/selected elements
+      // Skip non-interactive or occupied elements
       if (
         el.hasAttribute('disabled') ||
         el.getAttribute('aria-disabled') === 'true' ||
         el.classList.contains('occupied') ||
         el.classList.contains('booked') ||
         el.classList.contains('sold') ||
-        el.classList.contains('unavailable') ||
-        el.classList.contains('selected')
+        el.classList.contains('unavailable')
       ) {
         continue;
       }
 
-      // Check row label
       const seatInfo = extractSeatInfoFromElement(el);
-      if (!seatInfo || !allowedRows.includes(seatInfo.row)) {
+      if (!seatInfo) continue;
+
+      if (filterRows && filterRows.length > 0 && !filterRows.includes(seatInfo.row)) {
         continue;
       }
 
@@ -179,11 +240,37 @@ async function handleSeatSelectionAndReservation(payload: {
         continue;
       }
 
-      dispatchHumanClick(el);
-      clickedSeats.push(seatInfo.label);
-      console.log(`[Movie Assistant] Fallback clicked available seat: ${seatInfo.label} (${clickedSeats.length}/${targetCount})`);
-      await new Promise(r => setTimeout(r, 220));
+      if (isSeatElementSelected(el)) {
+        clickedSeats.push(seatInfo.label);
+      } else {
+        dispatchHumanClick(el);
+        clickedSeats.push(seatInfo.label);
+        console.log(`[Movie Assistant] Fallback selected seat: ${seatInfo.label} (${clickedSeats.length}/${targetCount})`);
+        await new Promise(r => setTimeout(r, 180));
+      }
     }
+  };
+
+  // Phase 2: Live DOM fallback within allowed rows (e.g. B, C, D, E, F)
+  if (clickedSeats.length < targetCount) {
+    console.log(`[Movie Assistant] Need ${targetCount - clickedSeats.length} more seat(s) in rows ${allowedRows.join(', ')}...`);
+    const allSeatElements = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        '[data-seat-id], [role="gridcell"], [data-seat-label], [data-testid*="seat"], button[aria-label*="seat"], button[aria-label*="Seat"]'
+      )
+    );
+    await clickAvailableFromList(allSeatElements, allowedRows);
+  }
+
+  // Phase 3: Live DOM fallback across ALL available rows in the hall to guarantee requiredSeats!
+  if (clickedSeats.length < targetCount) {
+    console.log(`[Movie Assistant] Still need ${targetCount - clickedSeats.length} seat(s). Expanding to ALL rows in hall to fulfill required ${targetCount} seats...`);
+    const allSeatElements = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        '[data-seat-id], [role="gridcell"], [data-seat-label], [data-testid*="seat"], button[aria-label*="seat"], button[aria-label*="Seat"]'
+      )
+    );
+    await clickAvailableFromList(allSeatElements, undefined);
   }
 
   console.log(`[Movie Assistant] Total seats selected: ${clickedSeats.length}/${targetCount}`);
@@ -257,39 +344,69 @@ function findSeatElement(label: string): HTMLElement | null {
   const rowMatch = cleanLabel.match(/^([A-Z]+)(\d+)$/);
   const rowLetter = rowMatch ? rowMatch[1] : '';
   const numVal = rowMatch ? parseInt(rowMatch[2], 10) : null;
+  const paddedNumber = rowLetter && numVal !== null ? `${rowLetter}${String(numVal).padStart(2, '0')}` : cleanLabel; // e.g. L1 -> L01
+  const spacedLabel = rowLetter && numVal !== null ? `${rowLetter} ${numVal}` : cleanLabel;
+  const spacedPaddedLabel = rowLetter && numVal !== null ? `${rowLetter} ${String(numVal).padStart(2, '0')}` : cleanLabel;
+  const dashedLabel = rowLetter && numVal !== null ? `${rowLetter}-${numVal}` : cleanLabel;
+  const dashedPaddedLabel = rowLetter && numVal !== null ? `${rowLetter}-${String(numVal).padStart(2, '0')}` : cleanLabel;
 
-  // 1. Direct attribute match (Ki Chole / Star Cineplex uses data-seat-id)
-  const byAttr = document.querySelector<HTMLElement>(
-    `[data-seat-id="${cleanLabel}"], [data-seat-id="${strippedNumber}"], ` +
-    `[data-seat-label="${cleanLabel}"], [data-seat-label="${strippedNumber}"]`
-  );
-  if (byAttr) return byAttr;
+  // 1. Direct attribute match (Ki Chole / Star Cineplex uses data-seat-id, data-seat-label, id)
+  const selectors = [
+    `[data-seat-id="${cleanLabel}"]`,
+    `[data-seat-id="${strippedNumber}"]`,
+    `[data-seat-id="${paddedNumber}"]`,
+    `[data-seat-label="${cleanLabel}"]`,
+    `[data-seat-label="${strippedNumber}"]`,
+    `[data-seat-label="${paddedNumber}"]`,
+    `[id="${cleanLabel}"]`,
+    `[id="${strippedNumber}"]`,
+    `[id="${paddedNumber}"]`,
+    `[data-testid*="${cleanLabel}"]`,
+    `[data-testid*="${strippedNumber}"]`,
+  ];
+  for (const sel of selectors) {
+    const el = document.querySelector<HTMLElement>(sel);
+    if (el) return el;
+  }
 
   // 2. Ki Chole aria-label matching: e.g. "Row L seat L01", "Row L seat 1", "Row L seat 01"
   if (rowLetter && numVal !== null) {
-    const allSeats = Array.from(document.querySelectorAll<HTMLElement>('[role="gridcell"], [data-seat-id], button'));
+    const allSeats = Array.from(document.querySelectorAll<HTMLElement>('[role="gridcell"], [data-seat-id], button, [data-seat-label]'));
     for (const el of allSeats) {
       const aria = (el.getAttribute('aria-label') || '').toUpperCase();
       if (
         (aria.includes(`ROW ${rowLetter}`) || aria.includes(`ROW: ${rowLetter}`)) &&
-        (aria.includes(`SEAT ${cleanLabel}`) || aria.includes(`SEAT ${strippedNumber}`) || aria.includes(`SEAT ${numVal}`))
+        (aria.includes(`SEAT ${cleanLabel}`) ||
+         aria.includes(`SEAT ${strippedNumber}`) ||
+         aria.includes(`SEAT ${paddedNumber}`) ||
+         aria.includes(`SEAT ${numVal}`) ||
+         aria.includes(`SEAT ${String(numVal).padStart(2, '0')}`))
       ) {
         return el;
       }
     }
   }
 
-  // 3. Fallback: aria-label contains cleanLabel or strippedNumber
+  // 3. Fallback: aria-label contains cleanLabel, strippedNumber, or paddedNumber
   const byAria = document.querySelector<HTMLElement>(
-    `[aria-label*="${cleanLabel}"], [aria-label*="${strippedNumber}"]`
+    `[aria-label*="${cleanLabel}"], [aria-label*="${strippedNumber}"], [aria-label*="${paddedNumber}"]`
   );
   if (byAria) return byAria;
 
   // 4. By inner text
-  const buttons = Array.from(document.querySelectorAll<HTMLElement>('[role="gridcell"], button, div[role="button"], svg text'));
-  for (const b of buttons) {
+  const candidates = Array.from(document.querySelectorAll<HTMLElement>('[role="gridcell"], button, div[role="button"], svg text, span'));
+  for (const b of candidates) {
     const text = b.textContent?.trim().toUpperCase();
-    if (text === cleanLabel || text === strippedNumber) {
+    if (
+      text === cleanLabel ||
+      text === strippedNumber ||
+      text === paddedNumber ||
+      text === spacedLabel ||
+      text === spacedPaddedLabel ||
+      text === dashedLabel ||
+      text === dashedPaddedLabel ||
+      (numVal !== null && text === String(numVal) && b.closest(`[data-row="${rowLetter}"], [aria-label*="ROW ${rowLetter}"]`))
+    ) {
       return b;
     }
   }

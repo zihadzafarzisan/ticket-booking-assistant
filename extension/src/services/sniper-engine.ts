@@ -13,6 +13,7 @@ import {
   filterBlocksByRequirement,
   selectOptimalSeats,
   fulfillRequiredSeats,
+  createCompositeSeatBlock,
 } from '../algorithms/seat-block/index';
 import { rankResults, DEFAULT_WEIGHTS } from '../algorithms/ranking/scorer';
 import { Showtime, matchesLocation } from '../types/cinema';
@@ -26,7 +27,7 @@ import {
 } from '../types/sniper';
 import { playSuccessChime } from '../utils/audio';
 import { showDesktopNotification } from '../utils/notifications';
-import { normalizeToIsoDate, formatDateDisplay, getTimeSlot, DEFAULT_ALLOWED_ROWS } from '../utils/date';
+import { normalizeToIsoDate, formatDateDisplay, getTimeSlot, DEFAULT_ALLOWED_ROWS, isRowAllowed } from '../utils/date';
 
 export class SniperEngine {
   private state: SniperState = {
@@ -341,11 +342,15 @@ export class SniperEngine {
               ? undefined
               : DEFAULT_ALLOWED_ROWS);
 
-        const allBlocks = detectSeatBlocks(seatMap, {
+        const allBlocksInMap = detectSeatBlocks(seatMap, {
           requiredSeats,
-          allowedRows,
         });
-        let eligibleBlocks = filterBlocksByRequirement(allBlocks, requiredSeats);
+        const blocksInAllowedRows = allBlocksInMap.filter(b => isRowAllowed(b.row, allowedRows));
+
+        let eligibleBlocks = filterBlocksByRequirement(blocksInAllowedRows, requiredSeats);
+        if (eligibleBlocks.length === 0) {
+          eligibleBlocks = filterBlocksByRequirement(allBlocksInMap, requiredSeats);
+        }
 
         // Apply seat category preference if set
         if (config.preferredCategory && config.preferredCategory !== 'any') {
@@ -370,7 +375,7 @@ export class SniperEngine {
 
         if (eligibleBlocks.length > 0) {
           const bestBlock = eligibleBlocks[0];
-          const optimalSeats = fulfillRequiredSeats(eligibleBlocks, requiredSeats, allowedRows);
+          const optimalSeats = selectOptimalSeats(bestBlock, requiredSeats);
 
           return {
             found: true,
@@ -380,13 +385,14 @@ export class SniperEngine {
             seatLabels: optimalSeats.map(s => s.label),
             bookingUrl: show.bookingUrl,
           };
-        } else if (allBlocks.length > 0) {
-          const optimalSeats = fulfillRequiredSeats(allBlocks, requiredSeats, allowedRows);
-          if (optimalSeats.length >= requiredSeats) {
+        } else if (allBlocksInMap.length > 0) {
+          const optimalSeats = fulfillRequiredSeats(allBlocksInMap, requiredSeats, allowedRows);
+          if (optimalSeats.length > 0) {
+            const composite = createCompositeSeatBlock(optimalSeats, requiredSeats);
             return {
               found: true,
               showtime: show,
-              seatBlock: allBlocks[0],
+              seatBlock: composite,
               selectedSeats: optimalSeats,
               seatLabels: optimalSeats.map(s => s.label),
               bookingUrl: show.bookingUrl,
@@ -499,6 +505,8 @@ export class SniperEngine {
                   type: 'SELECT_AND_RESERVE',
                   payload: {
                     seatLabels,
+                    requiredSeats: this.state.config?.requiredSeats || seatLabels.length,
+                    allowedRows: this.state.config?.allowedRows || DEFAULT_ALLOWED_ROWS,
                     autoProceed: true,
                   },
                 }).catch(() => {});

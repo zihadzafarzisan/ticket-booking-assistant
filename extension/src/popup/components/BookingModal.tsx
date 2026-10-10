@@ -129,14 +129,14 @@ export function BookingModal({
           <div className="summary-row">
             <span>Selected Block</span>
             <strong>
-              Row {seatBlock.row} • {seatBlock.startSeat}-{seatBlock.endSeat}
+              {seatBlock.row.includes(',') ? `Rows ${seatBlock.row}` : `Row ${seatBlock.row}`} • {seatBlock.startSeat}-{seatBlock.endSeat}
             </strong>
           </div>
           <div className="summary-row">
             <span>Assigned Seats</span>
             <strong className="assigned-pill">
               {assignedSeatLabels.length > 0
-                ? `Row ${seatBlock.row} • ${assignedSeatLabels.join(', ')}`
+                ? `${seatBlock.row.includes(',') ? `Rows ${seatBlock.row}` : `Row ${seatBlock.row}`} • ${assignedSeatLabels.join(', ')}`
                 : `${requiredSeats} seats`}
             </strong>
           </div>

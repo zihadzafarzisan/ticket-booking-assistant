@@ -285,5 +285,63 @@ export function fulfillRequiredSeats(
     }
   }
 
+  // 3. Fallback: If candidateBlocks (e.g. allowedRows) did not have enough seats to reach count,
+  // expand to the remaining blocks outside allowedRows to strictly fulfill the requested seats!
+  if (selectedSeats.length < count && candidateBlocks !== blocks) {
+    const otherBlocks = blocks
+      .filter(b => !candidateBlocks.includes(b))
+      .sort((a, b) => {
+        if (b.capacity !== a.capacity) {
+          return b.capacity - a.capacity;
+        }
+        return b.centerScore - a.centerScore;
+      });
+
+    for (const block of otherBlocks) {
+      if (selectedSeats.length >= count) break;
+      const remainingNeeded = count - selectedSeats.length;
+
+      const blockSeats = selectOptimalSeats(block, remainingNeeded);
+      for (const seat of blockSeats) {
+        if (!selectedSeatIds.has(seat.id)) {
+          selectedSeatIds.add(seat.id);
+          selectedSeats.push(seat);
+          if (selectedSeats.length >= count) break;
+        }
+      }
+    }
+  }
+
   return selectedSeats;
+}
+
+/**
+ * Create a composite seat block containing fulfilled seats across multiple rows or blocks
+ */
+export function createCompositeSeatBlock(
+  seats: Seat[],
+  requiredCount: number
+): SeatBlock {
+  const sortedSeats = [...seats].sort((a, b) => {
+    if (a.row !== b.row) return a.row.localeCompare(b.row);
+    return a.number - b.number;
+  });
+
+  const uniqueRows = Array.from(new Set(sortedSeats.map(s => s.row)));
+  const rowLabel = uniqueRows.length === 1 ? uniqueRows[0] : uniqueRows.join(', ');
+
+  const capacity = sortedSeats.length;
+  const availableCount = sortedSeats.filter(s => s.status === 'available').length;
+
+  return {
+    id: `composite-${uniqueRows.join('-')}-${capacity}`,
+    row: rowLabel,
+    seats: sortedSeats,
+    startSeat: sortedSeats[0]?.label || '',
+    endSeat: sortedSeats[sortedSeats.length - 1]?.label || '',
+    capacity,
+    availableCount,
+    centerScore: 0.88,
+    meetsRequirement: capacity >= requiredCount,
+  };
 }

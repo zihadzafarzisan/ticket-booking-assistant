@@ -95,13 +95,17 @@ export function ResultCard({
 
       <div className="seat-block-info">
         <div className="block-title">
-          <strong>Row {seatBlock.row} • {seatBlock.startSeat}–{seatBlock.endSeat}</strong>
+          <strong>
+            {seatBlock.row.includes(',') ? `Rows ${seatBlock.row}` : `Row ${seatBlock.row}`} • {seatBlock.startSeat}–{seatBlock.endSeat}
+          </strong>
           <span className="block-capacity">
-            {seatBlock.capacity} consecutive seats available
+            {seatBlock.capacity} seats available
           </span>
         </div>
         <div className="block-subtext">
-          Presents all {seatBlock.capacity} continuous seats as 1 clean option (allocates best {requiredSeats} together)
+          {seatBlock.capacity >= requiredSeats
+            ? `Allocates best ${requiredSeats} seats together in this block`
+            : `Combines seats across rows to fulfill your requested ${requiredSeats} seats`}
         </div>
       </div>
 

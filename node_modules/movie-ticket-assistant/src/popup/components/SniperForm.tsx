@@ -181,14 +181,48 @@ export function SniperForm({
           >
             −
           </button>
-          <span className="stepper-value">{seats} seat{seats > 1 ? 's' : ''} together</span>
+          <input
+            id="sniper-seats"
+            type="number"
+            min={1}
+            max={50}
+            value={seats}
+            onChange={e => setSeats(Math.max(1, Math.min(50, parseInt(e.target.value) || 1)))}
+            style={{
+              width: '60px',
+              textAlign: 'center',
+              fontWeight: 700,
+              fontSize: '15px',
+              border: 'none',
+              background: 'transparent',
+              color: '#ffffff',
+            }}
+          />
+          <span className="stepper-value" style={{ flex: 'none', minWidth: 'auto', paddingRight: '8px' }}>
+            seat{seats > 1 ? 's' : ''}
+          </span>
           <button
             type="button"
             className="stepper-btn"
-            onClick={() => setSeats(s => Math.min(10, s + 1))}
+            onClick={() => setSeats(s => Math.min(50, s + 1))}
           >
             +
           </button>
+        </div>
+        <div className="quick-suggestions" style={{ marginTop: '6px' }}>
+          <div className="suggestion-tags">
+            {[1, 2, 3, 4, 6, 8, 10, 15, 20].map(num => (
+              <button
+                key={num}
+                type="button"
+                className={`suggestion-tag ${seats === num ? 'is-active' : ''}`}
+                style={seats === num ? { background: '#ef4444', color: '#fff', borderColor: '#ef4444' } : {}}
+                onClick={() => setSeats(num)}
+              >
+                {num} {num === 1 ? 'seat' : 'seats'}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 

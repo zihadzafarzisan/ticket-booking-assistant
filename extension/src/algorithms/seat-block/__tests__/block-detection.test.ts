@@ -3,7 +3,13 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { detectSeatBlocks, filterBlocksByRequirement, selectOptimalSeats, fulfillRequiredSeats } from '../index';
+import {
+  detectSeatBlocks,
+  filterBlocksByRequirement,
+  selectOptimalSeats,
+  fulfillRequiredSeats,
+  createCompositeSeatBlock,
+} from '../index';
 import { Seat, SeatMap, SeatStatus } from '../../../types/seat';
 
 function createMockSeat(row: string, number: number, status: SeatStatus = 'available'): Seat {
@@ -445,6 +451,48 @@ describe('selectOptimalSeats', () => {
 
       const optimal = selectOptimalSeats(blocks[0], 9);
       expect(optimal).toHaveLength(9);
+    });
+
+    it('should strictly fulfill 20 seats across multiple rows B-F', () => {
+      // Row B has 8 seats, Row C has 7 seats, Row D has 8 seats
+      const seatsB = Array.from({ length: 8 }, (_, i) => createMockSeat('B', i + 1));
+      const seatsC = Array.from({ length: 7 }, (_, i) => createMockSeat('C', i + 1));
+      const seatsD = Array.from({ length: 8 }, (_, i) => createMockSeat('D', i + 1));
+      const seatMap = createMockSeatMap({ B: seatsB, C: seatsC, D: seatsD });
+      const blocks = detectSeatBlocks(seatMap, { requiredSeats: 7, allowedRows: ['B', 'C', 'D', 'E', 'F'] });
+
+      const fulfilled = fulfillRequiredSeats(blocks, 20, ['B', 'C', 'D', 'E', 'F']);
+      expect(fulfilled).toHaveLength(20);
+
+      const uniqueIds = new Set(fulfilled.map(s => s.id));
+      expect(uniqueIds.size).toBe(20);
+
+      // Create composite block
+      const composite = createCompositeSeatBlock(fulfilled, 20);
+      expect(composite.capacity).toBe(20);
+      expect(composite.seats).toHaveLength(20);
+      expect(composite.meetsRequirement).toBe(true);
+      expect(composite.row).toContain('B');
+      expect(composite.row).toContain('C');
+      expect(composite.row).toContain('D');
+    });
+
+    it('should expand to other rows when allowedRows has fewer than 20 seats', () => {
+      // Rows B & C only have 12 seats total, Row G has 10 seats
+      const seatsB = Array.from({ length: 6 }, (_, i) => createMockSeat('B', i + 1));
+      const seatsC = Array.from({ length: 6 }, (_, i) => createMockSeat('C', i + 1));
+      const seatsG = Array.from({ length: 10 }, (_, i) => createMockSeat('G', i + 1));
+      const seatMap = createMockSeatMap({ B: seatsB, C: seatsC, G: seatsG });
+      const allBlocks = detectSeatBlocks(seatMap, { requiredSeats: 6 });
+
+      const fulfilled = fulfillRequiredSeats(allBlocks, 20, ['B', 'C', 'D', 'E', 'F']);
+      expect(fulfilled).toHaveLength(20);
+
+      // Contains 12 seats from B and C, plus 8 from G
+      const bOrCSeats = fulfilled.filter(s => s.row === 'B' || s.row === 'C');
+      const gSeats = fulfilled.filter(s => s.row === 'G');
+      expect(bOrCSeats).toHaveLength(12);
+      expect(gSeats).toHaveLength(8);
     });
   });
 });

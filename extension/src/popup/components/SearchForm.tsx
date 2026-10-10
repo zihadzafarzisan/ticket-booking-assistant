@@ -123,15 +123,33 @@ export function SearchForm({
 
       {/* Seats Required */}
       <div className="form-group">
-        <label htmlFor="seats">Seats required</label>
+        <div className="section-label-row">
+          <label htmlFor="seats">Seats required</label>
+          <span className="row-badge-pill">{seats} seat{seats > 1 ? 's' : ''}</span>
+        </div>
         <input
           id="seats"
           type="number"
           min={1}
-          max={10}
+          max={50}
           value={seats}
           onChange={e => setSeats(Math.max(1, parseInt(e.target.value) || 1))}
         />
+        <div className="quick-suggestions" style={{ marginTop: '6px' }}>
+          <div className="suggestion-tags">
+            {[1, 2, 3, 4, 6, 8, 10, 15, 20].map(num => (
+              <button
+                key={num}
+                type="button"
+                className={`suggestion-tag ${seats === num ? 'is-active' : ''}`}
+                style={seats === num ? { background: '#ef4444', color: '#fff', borderColor: '#ef4444' } : {}}
+                onClick={() => setSeats(num)}
+              >
+                {num} {num === 1 ? 'seat' : 'seats'}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
 
       {/* Multiple Locations Selection */}
