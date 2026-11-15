@@ -37,7 +37,10 @@ export class DiscoveryService {
         movies
           .slice(0, 8)
           .map((movie) =>
-            adapter.getShowtimes(movie, { date: input.targetDate }),
+            adapter.getShowtimes(movie, {
+              date: input.targetDate,
+              minAvailableSeats: input.requiredSeats,
+            }),
           ),
       )
     ).flat();
@@ -49,6 +52,7 @@ export class DiscoveryService {
       .filter(
         (show) =>
           show.date === input.targetDate &&
+          (!input.targetShowId || show.id === input.targetShowId) &&
           matchesLocation(show, input.locationIds) &&
           (!input.preferredTimes.length ||
             input.preferredTimes.includes(getTimeSlot(show.time))),

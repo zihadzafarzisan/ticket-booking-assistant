@@ -16,6 +16,7 @@ export type TaskStatus =
   | "stopped"
   | "error";
 export interface TaskInput {
+  targetShowId?: string;
   movieName: string;
   targetDate: string;
   requiredSeats: number;
@@ -83,6 +84,9 @@ export function validateTask(value: unknown): TaskInput {
   const text = (key: string) =>
     typeof v[key] === "string" ? (v[key] as string).trim() : "";
   const movieName = text("movieName");
+  const targetShowId = text("targetShowId") || undefined;
+  if (targetShowId && !/^[a-zA-Z0-9-]{1,100}$/.test(targetShowId))
+    throw new Error("Invalid selected show.");
   if (!movieName || movieName.length > 120)
     throw new Error("Enter a movie name between 1 and 120 characters.");
   const targetDate = text("targetDate");
@@ -143,6 +147,7 @@ export function validateTask(value: unknown): TaskInput {
     if (v[key] !== undefined && typeof v[key] !== "boolean")
       throw new Error(`Invalid ${key}.`);
   return {
+    targetShowId,
     movieName,
     targetDate,
     requiredSeats,

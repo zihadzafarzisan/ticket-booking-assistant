@@ -14,6 +14,22 @@ const input = () =>
     preferredTimes: ["afternoon"],
   });
 describe("standalone discovery", () => {
+  it("pins a live-selected mission to the exact show ID", async () => {
+    const config = { ...input(), targetShowId: "demo-show-1" };
+    const results = await new DiscoveryService(
+      new DemoAdapter(),
+      new DemoAdapter(),
+    ).search(config, new AbortController().signal);
+    expect(results.length).toBeGreaterThan(0);
+    expect(
+      results.every((result) => result.showtime.id === "demo-show-1"),
+    ).toBe(true);
+    const missing = await new DiscoveryService().search(
+      { ...config, targetShowId: "not-published" },
+      new AbortController().signal,
+    );
+    expect(missing).toEqual([]);
+  });
   it("never merges explicitly disconnected seats into a together candidate", () => {
     const seats = [1, 2].map((number) => ({
       id: `B${number}`,

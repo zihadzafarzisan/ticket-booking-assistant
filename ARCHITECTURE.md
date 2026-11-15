@@ -48,6 +48,16 @@ Browser selection is serialized across tasks. Cancellation is checked before sid
 
 Each task has a nonoverlapping timer and AbortController. Stop cancels future checks and closes an in-progress automation page to cancel pending locator actions. A page already handed over for payment stays open. Resume waits for an aborted operation to settle.
 
+## Live inventory
+
+`bot/src/live-inventory.ts` reads public Star Cineplex catalog, venue and show endpoints. It resolves hall names from published seat-map metadata, caches those names, and uses identifier fallbacks when optional names are unavailable. Restricted organization hall endpoints are not used.
+
+Idle inventory refreshes every 30 seconds. Concurrent requests share a refresh; `LiveStarCineplexAdapter` supplies bot searches with inventory at most one second old. Ticket state uses provider status, effective sales channel, zero-preserving availability and effective online-sales cutoff in Bangladesh time. This feed never synthesizes seat counts.
+
+`GET /api/live` serves projected public fields; `POST /api/live/refresh` requests a refresh. Updates arrive as `inventory` events on the existing SSE stream. Source failures preserve last-success data with stale/error status, while live bot discovery refuses a failed refresh. Open/reopened-sales notices compare successful snapshots; first load establishes a baseline.
+
+`dashboard/src/LiveCineplex.tsx` provides movies, show sales and published-hall views, filters and targeted task creation. Exact-show missions store `targetShowId` and restrict discovery to that ID as well as the selected movie, date, branch and seat count.
+
 ## Persistence and recovery
 
 The versioned JSON store contains tasks, inputs, candidate results, check counts and the latest 100 log events per task. Writes are serialized through temporary-file rename. Browser session data is held separately in a dedicated profile.

@@ -5,6 +5,7 @@ import {
   type TimeSlot,
 } from "../../packages/core/src";
 import type { TaskInput } from "../../bot/src/contracts";
+import type { LiveMovie, LiveBranch } from "../../bot/src/live-types";
 import { Icon } from "./icons";
 export const today = () =>
   new Date(Date.now() + 6 * 3600_000).toISOString().slice(0, 10);
@@ -12,10 +13,16 @@ export default function TaskForm({
   onClose,
   onCreate,
   busy,
+  initial,
+  movies,
+  branches,
 }: {
   onClose: () => void;
   onCreate: (input: TaskInput) => Promise<void>;
   busy: boolean;
+  initial?: Partial<TaskInput>;
+  movies?: LiveMovie[];
+  branches?: LiveBranch[];
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [form, setForm] = useState<TaskInput>({
@@ -38,7 +45,13 @@ export default function TaskForm({
     strategy: "best",
     keepTogether: true,
     autoReserve: true,
+    ...initial,
   });
+  const branchChoices = branches?.length
+    ? branches
+        .filter((branch) => branch.active)
+        .map((branch) => ({ id: branch.locationId, shortName: branch.name }))
+    : STAR_CINEPLEX_LOCATIONS;
   const [schedule, setSchedule] = useState("");
   const [advanced, setAdvanced] = useState(false);
   const [error, setError] = useState("");
@@ -46,7 +59,13 @@ export default function TaskForm({
     dialog.current?.showModal();
   }, []);
   const update = <K extends keyof TaskInput>(key: K, value: TaskInput[K]) =>
-    setForm((prev) => ({ ...prev, [key]: value }));
+    setForm((prev) => ({
+      ...prev,
+      [key]: value,
+      ...(["movieName", "targetDate", "source"].includes(key)
+        ? { targetShowId: undefined }
+        : {}),
+    }));
   const toggle = (
     key: "allowedRows" | "locationIds" | "preferredTimes",
     value: string,
@@ -95,6 +114,13 @@ export default function TaskForm({
           </button>
         </header>
         <div className="dialog-body">
+          {form.targetShowId && (
+            <div className="pinned-show">
+              <Icon name="pin" size={15} />
+              Pinned to your selected show. Change the movie or date to search
+              other shows.
+            </div>
+          )}
           <div className="mode-picker">
             {(["instant", "monitor"] as const).map((mode) => (
               <button
@@ -133,6 +159,7 @@ export default function TaskForm({
             <label className="field">
               Show date
               <input
+                list="live-movie-titles"
                 aria-label="Show date"
                 type="date"
                 required
@@ -140,6 +167,11 @@ export default function TaskForm({
                 value={form.targetDate}
                 onChange={(e) => update("targetDate", e.target.value)}
               />
+              <datalist id="live-movie-titles">
+                {movies?.map((movie) => (
+                  <option key={movie.id} value={movie.title} />
+                ))}
+              </datalist>
             </label>
             <label className="field">
               Number of seats
@@ -167,7 +199,7 @@ export default function TaskForm({
                     "locationIds",
                     form.locationIds.length
                       ? []
-                      : STAR_CINEPLEX_LOCATIONS.map((l) => l.id),
+                      : branchChoices.map((l) => l.id),
                   )
                 }
               >
@@ -175,7 +207,7 @@ export default function TaskForm({
               </button>
             </div>
             <div className="branch-choices">
-              {STAR_CINEPLEX_LOCATIONS.map((loc) => (
+              {branchChoices.map((loc) => (
                 <button
                   key={loc.id}
                   type="button"

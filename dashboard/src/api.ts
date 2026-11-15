@@ -1,4 +1,5 @@
 import type { Snapshot } from "../../bot/src/contracts";
+import type { LiveInventory } from "../../bot/src/live-types";
 export async function api<T = unknown>(
   path: string,
   body?: unknown,
@@ -24,6 +25,7 @@ export async function api<T = unknown>(
 export function subscribe(
   onSnapshot: (snapshot: Snapshot) => void,
   onConnection: (connected: boolean) => void,
+  onInventory?: (inventory: LiveInventory) => void,
 ) {
   const stream = new EventSource("/api/events");
   stream.addEventListener("snapshot", (event) => {
@@ -31,5 +33,8 @@ export function subscribe(
     onConnection(true);
   });
   stream.onerror = () => onConnection(false);
+  stream.addEventListener("inventory", (event) => {
+    onInventory?.(JSON.parse((event as MessageEvent).data));
+  });
   return () => stream.close();
 }

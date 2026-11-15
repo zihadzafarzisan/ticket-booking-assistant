@@ -4,6 +4,8 @@ A standalone movie ticket assistant with a web dashboard and a dedicated browser
 
 Create an instant search or monitor a scheduled ticket drop. Choose the movie, show date, branches, time slots, seat tier and rows. The bot finds candidate seat blocks, checks the live cinema page, selects seats and hands checkout to you.
 
+**Live Cineplex** shows Star Cineplex's current movie catalog, published showtimes, halls and reported ticket availability. The bot uses this same feed for live missions.
+
 ## Start
 
 Requires **Node.js 22.12 or newer**, npm and a desktop environment for the visible cinema browser.
@@ -22,6 +24,14 @@ For development with dashboard live reload, run `npm.cmd run dev`.
 Keep the terminal/service and computer running. Closing the dashboard tab does not stop tasks. Sleeping, shutting down or stopping the service suspends execution. Saved monitoring jobs resume when the service restarts; interrupted instant searches need to be restarted from the dashboard.
 
 ## Dashboard workflow
+
+Open **Live Cineplex** to browse now-showing or upcoming movies, filter by branch/date and inspect sales states: online sales open, sold out, not yet open, closed or counter-only. The feed refreshes every 30 seconds; **Refresh now** requests an immediate update. Live missions request fresh inventory during their checks.
+
+Hall names come from public metadata for published shows. A hall with “tickets open” has online sales open for at least one listed show; this does not indicate physical opening hours. Ticket counts are provider-reported aggregates, and actual seat selection is verified in the cinema browser.
+
+Use **Find seats** beside a show to create a mission pinned to that exact showtime, or **Monitor movie** for a movie without open online sales. Live movie titles and active branches also populate the mission form. “Ticket sales opened” notices compare successful refreshes; the first load establishes a baseline, which resets when the service restarts.
+
+If the provider becomes unavailable, last-success inventory stays visible with a stale-data warning and live shortcuts are disabled. Failed live requests never substitute demo listings or invent ticket availability.
 
 1. **Settings → Open cinema browser:** sign in on the cinema website. Login remains in the bot's dedicated local browser profile.
 2. **New mission:** choose instant search or drop monitoring, enter the movie/date/count and select branches and time slots.
@@ -81,7 +91,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) and [STACK.md](STACK.md). Previous extens
 
 ## Verification and integration limits
 
-The migration is verified with deterministic unit/API tests and local browser fixtures covering cancellation, restoration, mobile layout and selected-seat verification. Fixtures do not make real reservations.
+The migration and live inventory are verified with deterministic unit/API tests and local browser fixtures covering cancellation, restoration, mobile layout, sales-state normalization, refresh/recovery and selected-seat verification. The live feed has also been checked read-only against the actual public API. Fixtures do not make real reservations.
 
 The Star Cineplex catalog/layout adapter is reused from the existing system. Discovery layouts remain candidate estimates; the browser reads the live seat DOM before selection. Website/API or DOM changes may require adapter/selector updates. If login, CAPTCHA, unavailable seats or an unrecognized step prevents automation, the task hands the page to you. The dashboard does not collect payment credentials, and payment is never submitted automatically.
 

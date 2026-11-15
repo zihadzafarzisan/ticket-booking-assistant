@@ -5,6 +5,8 @@ import { BotRunner } from "./runner";
 import { DiscoveryService } from "./discovery";
 import { BrowserDriver } from "./browser";
 import { createBotServer, type ServerOptions } from "./server";
+import { LiveInventoryService } from "./live-inventory";
+import { LiveStarCineplexAdapter } from "./live-adapter";
 
 export async function startBot(
   options: ServerOptions & { port?: number; dataDirectory?: string } = {},
@@ -18,9 +20,10 @@ export async function startBot(
       process.env.BOT_DATA_DIR ||
       resolve(root, ".bot-data"),
   );
+  const inventory = options.inventory || new LiveInventoryService();
   const runner = new BotRunner(
     new TaskStore(resolve(data, "tasks.json")),
-    new DiscoveryService(),
+    new DiscoveryService(new LiveStarCineplexAdapter(inventory)),
     new BrowserDriver(
       resolve(data, "browser-profile"),
       process.env.BOT_HEADLESS === "1",
@@ -30,6 +33,7 @@ export async function startBot(
   const { server, closeEvents } = createBotServer(runner, {
     staticDirectory: resolve(root, "dashboard/dist"),
     ...options,
+    inventory,
   });
   try {
     await new Promise<void>((done, reject) => {
@@ -37,9 +41,11 @@ export async function startBot(
       server.listen(port, "127.0.0.1", () => done());
     });
   } catch (error) {
+    await inventory.stop();
     await runner.shutdown();
     throw error;
   }
+  inventory.start();
   const address = server.address();
   const actualPort =
     typeof address === "object" && address ? address.port : port;
@@ -51,10 +57,11 @@ export async function startBot(
     if (closing) return;
     closing = true;
     closeEvents();
+    await inventory.stop();
     await new Promise<void>((done) => server.close(() => done()));
     await runner.shutdown();
   };
-  return { server, runner, close, port: actualPort };
+  return { server, runner, inventory, close, port: actualPort };
 }
 
 if (process.env.BOT_EMBEDDED !== "1") {

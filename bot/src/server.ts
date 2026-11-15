@@ -6,6 +6,7 @@ import {
 import { readFile, stat } from "node:fs/promises";
 import { resolve, sep, extname } from "node:path";
 import type { BotRunner } from "./runner";
+import type { LiveInventoryService } from "./live-inventory";
 import {
   STAR_CINEPLEX_LOCATIONS,
   TIME_SLOT_CONFIG,
@@ -43,6 +44,7 @@ function json(res: ServerResponse, status: number, value: unknown) {
   res.end(JSON.stringify(value));
 }
 export interface ServerOptions {
+  inventory?: LiveInventoryService;
   staticDirectory?: string;
   devHandler?: (req: IncomingMessage, res: ServerResponse) => void;
 }
@@ -76,6 +78,15 @@ export function createBotServer(
           json(res, 200, runner.snapshot());
           return;
         }
+        if (req.method === "GET" && route === "/api/live") {
+          if (!options.inventory)
+            throw new HttpError(
+              503,
+              "The live inventory service is unavailable.",
+            );
+          json(res, 200, options.inventory.snapshot());
+          return;
+        }
         if (req.method === "GET" && route === "/api/events") {
           res.writeHead(200, {
             "Content-Type": "text/event-stream",
@@ -91,11 +102,24 @@ export function createBotServer(
               );
           };
           const unsubscribe = runner.subscribe(send);
+          const sendInventory = () => {
+            if (options.inventory && !res.destroyed)
+              res.write(
+                `event: inventory\ndata: ${JSON.stringify(options.inventory.snapshot())}\n\n`,
+              );
+          };
+          const unsubscribeInventory =
+            options.inventory?.subscribe(sendInventory);
           send();
-          const keepalive = setInterval(send, 15_000);
-          req.on("close", () => {
+          sendInventory();
+          const keepalive = setInterval(() => {
+            send();
+            sendInventory();
+          }, 15_000);
+          res.on("close", () => {
             clearInterval(keepalive);
             unsubscribe();
+            unsubscribeInventory?.();
             connections.delete(res);
           });
           return;
@@ -104,6 +128,16 @@ export function createBotServer(
           if (req.headers["x-ticket-bot"] !== "dashboard")
             throw new HttpError(403, "A dashboard request header is required.");
           const input = await body(req);
+          if (route === "/api/live/refresh") {
+            if (!options.inventory)
+              throw new HttpError(
+                503,
+                "The live inventory service is unavailable.",
+              );
+            void options.inventory.refresh().catch(() => {});
+            json(res, 202, { ok: true });
+            return;
+          }
           if (route === "/api/tasks") {
             json(res, 201, await runner.create(input));
             return;

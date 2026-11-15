@@ -11,6 +11,8 @@ import { Icon } from "./icons";
 import { api, subscribe } from "./api";
 import TaskForm from "./TaskForm";
 import SeatInspector from "./SeatInspector";
+import LiveCineplex from "./LiveCineplex";
+import type { LiveInventory } from "../../bot/src/live-types";
 
 const statusLabels: Record<TaskStatus, string> = {
   queued: "Queued",
@@ -131,10 +133,12 @@ export default function App() {
   const [connected, setConnected] = useState(false);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState<
-    "overview" | "tasks" | "activity" | "settings" | "detail"
+    "overview" | "cinema" | "tasks" | "activity" | "settings" | "detail"
   >("overview");
   const [selectedId, setSelectedId] = useState<string>();
   const [showForm, setShowForm] = useState(false);
+  const [inventory, setInventory] = useState<LiveInventory>();
+  const [missionSeed, setMissionSeed] = useState<Partial<TaskInput>>();
   const [inspecting, setInspecting] = useState<Candidate>();
   const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState("");
@@ -155,6 +159,11 @@ export default function App() {
   }, []);
   useEffect(() => {
     let mounted = true;
+    api<LiveInventory>("/live")
+      .then((value) => {
+        if (mounted) setInventory(value);
+      })
+      .catch(() => {});
     api<Snapshot>("/state")
       .then((value) => {
         if (mounted) {
@@ -172,41 +181,52 @@ export default function App() {
           setToast({ message: error.message, error: true });
         }
       });
-    const close = subscribe((value) => {
-      if (!mounted) return;
-      for (const task of value.tasks)
-        if (
-          task.status === "awaiting_payment" &&
-          !notified.current.has(task.id)
-        ) {
-          notified.current.add(task.id);
-          setToast({ message: `${task.input.movieName}: checkout is ready.` });
-          if ("Notification" in window && Notification.permission === "granted")
-            new Notification("Your movie seats are ready", {
-              body: `Complete payment for ${task.input.movieName} in the cinema browser.`,
+    const close = subscribe(
+      (value) => {
+        if (!mounted) return;
+        for (const task of value.tasks)
+          if (
+            task.status === "awaiting_payment" &&
+            !notified.current.has(task.id)
+          ) {
+            notified.current.add(task.id);
+            setToast({
+              message: `${task.input.movieName}: checkout is ready.`,
             });
-          if (soundRef.current) {
-            try {
-              const ctx = new AudioContext();
-              const osc = ctx.createOscillator();
-              const gain = ctx.createGain();
-              osc.connect(gain);
-              gain.connect(ctx.destination);
-              osc.frequency.value = 660;
-              gain.gain.setValueAtTime(0.08, ctx.currentTime);
-              gain.gain.exponentialRampToValueAtTime(
-                0.001,
-                ctx.currentTime + 0.5,
-              );
-              osc.start();
-              osc.stop(ctx.currentTime + 0.5);
-              osc.onended = () => void ctx.close();
-            } catch {}
+            if (
+              "Notification" in window &&
+              Notification.permission === "granted"
+            )
+              new Notification("Your movie seats are ready", {
+                body: `Complete payment for ${task.input.movieName} in the cinema browser.`,
+              });
+            if (soundRef.current) {
+              try {
+                const ctx = new AudioContext();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.frequency.value = 660;
+                gain.gain.setValueAtTime(0.08, ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(
+                  0.001,
+                  ctx.currentTime + 0.5,
+                );
+                osc.start();
+                osc.stop(ctx.currentTime + 0.5);
+                osc.onended = () => void ctx.close();
+              } catch {}
+            }
           }
-        }
-      setSnapshot(value);
-      setLoading(false);
-    }, setConnected);
+        setSnapshot(value);
+        setLoading(false);
+      },
+      setConnected,
+      (value) => {
+        if (mounted) setInventory(value);
+      },
+    );
     return () => {
       mounted = false;
       close();
@@ -271,6 +291,7 @@ export default function App() {
     try {
       const task = await api<BotTask>("/tasks", input);
       setShowForm(false);
+      setMissionSeed(undefined);
       setSelectedId(task.id);
       setPage("detail");
       setSnapshot(await api<Snapshot>("/state"));
@@ -313,15 +334,17 @@ export default function App() {
     </button>
   );
   const title =
-    page === "overview"
-      ? "Mission control."
-      : page === "tasks"
-        ? "Your missions."
-        : page === "activity"
-          ? "The latest, live."
-          : page === "settings"
-            ? "Make it yours."
-            : selected?.input.movieName || "Mission details";
+    page === "cinema"
+      ? "Star Cineplex, live."
+      : page === "overview"
+        ? "Mission control."
+        : page === "tasks"
+          ? "Your missions."
+          : page === "activity"
+            ? "The latest, live."
+            : page === "settings"
+              ? "Make it yours."
+              : selected?.input.movieName || "Mission details";
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -345,6 +368,7 @@ export default function App() {
           {(
             [
               { id: "overview", label: "Overview", icon: "grid" },
+              { id: "cinema", label: "Live Cineplex", icon: "film" },
               { id: "tasks", label: "Missions", icon: "ticket" },
               { id: "activity", label: "Activity", icon: "activity" },
               { id: "settings", label: "Settings", icon: "settings" },
@@ -405,9 +429,11 @@ export default function App() {
             <span>Workspace</span>
             <Icon name="chevron" size={12} />
             <strong>
-              {page === "detail"
-                ? "Mission details"
-                : page[0].toUpperCase() + page.slice(1)}
+              {page === "cinema"
+                ? "Live Cineplex"
+                : page === "detail"
+                  ? "Mission details"
+                  : page[0].toUpperCase() + page.slice(1)}
             </strong>
           </div>
           <div className="topbar-right">
@@ -437,29 +463,33 @@ export default function App() {
                 </button>
               )}
               <span className="eyebrow">
-                {page === "overview"
-                  ? new Date(clock).toLocaleDateString("en-GB", {
-                      weekday: "long",
-                      day: "numeric",
-                      month: "long",
-                    })
-                  : page === "detail"
-                    ? `MISSION ${selectedId?.slice(0, 8).toUpperCase()}`
-                    : "YOUR PERSONAL TICKET ASSISTANT"}
+                {page === "cinema"
+                  ? "LIVE SOURCE · STAR CINEPLEX"
+                  : page === "overview"
+                    ? new Date(clock).toLocaleDateString("en-GB", {
+                        weekday: "long",
+                        day: "numeric",
+                        month: "long",
+                      })
+                    : page === "detail"
+                      ? `MISSION ${selectedId?.slice(0, 8).toUpperCase()}`
+                      : "YOUR PERSONAL TICKET ASSISTANT"}
               </span>
               <h1>{title}</h1>
               <p>
-                {page === "overview"
-                  ? "A clear view of every search, every drop, and every seat."
-                  : page === "tasks"
-                    ? "Every movie night starts with a mission."
-                    : page === "activity"
-                      ? "Everything your bot is doing, as it happens."
-                      : page === "settings"
-                        ? "Your browser, your preferences, your movie nights."
-                        : selected
-                          ? `${selected.input.source === "demo" ? "Demo mission" : "Star Cineplex"} · Created ${timeAgo(selected.createdAt)}`
-                          : "Select a mission from the list."}
+                {page === "cinema"
+                  ? "Running movies, published halls, and online ticket sales — refreshed from the provider."
+                  : page === "overview"
+                    ? "A clear view of every search, every drop, and every seat."
+                    : page === "tasks"
+                      ? "Every movie night starts with a mission."
+                      : page === "activity"
+                        ? "Everything your bot is doing, as it happens."
+                        : page === "settings"
+                          ? "Your browser, your preferences, your movie nights."
+                          : selected
+                            ? `${selected.input.source === "demo" ? "Demo mission" : "Star Cineplex"} · Created ${timeAgo(selected.createdAt)}`
+                            : "Select a mission from the list."}
               </p>
             </div>
             {page !== "settings" && (
@@ -479,6 +509,17 @@ export default function App() {
               The dashboard is reconnecting. Leave the bot service running to
               continue your missions.
             </div>
+          )}
+          {page === "cinema" && (
+            <LiveCineplex
+              inventory={inventory}
+              connected={connected}
+              onRefresh={() => action("/live/refresh")}
+              onCreate={(seed) => {
+                setMissionSeed(seed);
+                setShowForm(true);
+              }}
+            />
           )}
           {page === "overview" && (
             <>
@@ -531,6 +572,23 @@ export default function App() {
                   </span>
                 </div>
               </section>
+              <button
+                className="live-overview-strip"
+                onClick={() => navigate("cinema")}
+              >
+                <Icon name="film" size={21} />
+                <div>
+                  <strong>Star Cineplex live inventory</strong>
+                  <span>
+                    {inventory?.fetchedAt
+                      ? `${inventory.counts.nowShowingMovies} now-showing movies · ${inventory.counts.openShows} shows with online sales open · ${inventory.counts.hallsWithOpenTickets} halls${inventory.status !== "live" ? " · Last known data" : ""}`
+                      : inventory?.status === "error"
+                        ? "Provider unavailable — view connection details"
+                        : "Loading running movies, halls and ticket sales…"}
+                  </span>
+                </div>
+                <Icon name="arrow" size={17} />
+              </button>
               <section className="stats-grid" aria-label="Bot statistics">
                 {[
                   {
@@ -1255,7 +1313,13 @@ export default function App() {
       {showForm && (
         <TaskForm
           busy={creating}
-          onClose={() => setShowForm(false)}
+          initial={missionSeed}
+          movies={inventory?.movies}
+          branches={inventory?.branches}
+          onClose={() => {
+            setShowForm(false);
+            setMissionSeed(undefined);
+          }}
           onCreate={createTask}
         />
       )}

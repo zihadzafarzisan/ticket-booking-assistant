@@ -12,6 +12,8 @@ import {
   DEFAULT_WEIGHTS,
 } from "../../packages/core/src";
 import { allowedBookingUrl } from "./browser";
+import { LiveInventoryService } from "./live-inventory";
+import { inventoryFixture } from "./testing/live-fixture";
 
 const input = (extra: Partial<TaskInput> = {}): TaskInput => ({
   movieName: "Test movie",
@@ -226,6 +228,72 @@ describe("durable bot execution", () => {
   });
 });
 describe("local HTTP API", () => {
+  it("serves and streams live inventory and accepts a protected refresh request", async () => {
+    const { runner } = await setup();
+    const fixture = inventoryFixture();
+    const inventory = new LiveInventoryService(fixture.fetcher, {
+      now: () => Date.parse("2026-11-16T06:00:00Z"),
+    });
+    await inventory.refresh();
+    const { server, closeEvents } = createBotServer(runner, { inventory });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string")
+      throw new Error("Missing address");
+    const url = `http://127.0.0.1:${address.port}`;
+    try {
+      const response = await fetch(`${url}/api/live`);
+      expect(response.status).toBe(200);
+      expect((await response.json()).counts.openShows).toBe(1);
+      const events = await fetch(`${url}/api/events`, {
+        signal: AbortSignal.timeout(5000),
+      });
+      const reader = events.body!.getReader();
+      let content = "";
+      while (!content.includes("event: inventory")) {
+        const next = await reader.read();
+        if (next.done) break;
+        content += new TextDecoder().decode(next.value);
+      }
+      expect(content).toContain("event: inventory");
+      fixture.shows[1].availableSeats = 2;
+      const refreshed = await fetch(`${url}/api/live/refresh`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-ticket-bot": "dashboard",
+        },
+        body: "{}",
+      });
+      expect(refreshed.status).toBe(202);
+      await vi.waitFor(() =>
+        expect(inventory.snapshot().counts.openShows).toBe(2),
+      );
+      content = "";
+      while (!content.includes('"openShows":2')) {
+        const next = await reader.read();
+        if (next.done) break;
+        content += new TextDecoder().decode(next.value);
+      }
+      expect(content).toContain('"openShows":2');
+      await reader.cancel();
+      expect(
+        (
+          await fetch(`${url}/api/live/refresh`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: "{}",
+          })
+        ).status,
+      ).toBe(403);
+    } finally {
+      closeEvents();
+      server.closeAllConnections();
+      await new Promise<void>((done) => server.close(() => done()));
+      await inventory.stop();
+    }
+  });
   it("creates tasks, streams snapshots, rejects foreign origins and serves the dashboard", async () => {
     const { runner, store } = await setup();
     await writeFile(
