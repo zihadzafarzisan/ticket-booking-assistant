@@ -1,191 +1,88 @@
-# 🎬 Movie Ticket Discovery & Booking Assistant
+# Cinebot — local movie ticket bot
 
-A production-grade Chrome extension (Manifest V3) that finds the best seats across supported cinema booking websites — all from one search.
+A standalone movie ticket assistant with a web dashboard and a dedicated browser for cinema login and payment. No Chrome extension installation is required.
 
-## The Problem It Solves
+Create an instant search or monitor a scheduled ticket drop. Choose the movie, show date, branches, time slots, seat tier and rows. The bot finds candidate seat blocks, checks the live cinema page, selects seats and hands checkout to you.
 
-Manually browsing multiple cinema sites to find good seats is slow. This extension lets you enter just:
+## Start
 
-1. **Movie name**
-2. **Number of consecutive seats**
+Requires **Node.js 22.12 or newer**, npm and a desktop environment for the visible cinema browser.
 
-…and it discovers cinemas, halls, dates, showtimes, seat maps, and — crucially — **every maximal continuous block of available seats** that fits your party.
-
-### No Overlapping Results
-
-If a row has `F2-F6` continuously available and you need 3 seats, it shows **one** result:
-
-> Row F • F2-F6 — 5 consecutive seats available
-
-…not `F2-F4`, `F3-F5`, `F4-F6` as three separate choices.
-
-## Architecture
-
-```
-User Input (Movie + Seats)
-        ↓
-┌─────────────────────────────┐
-│ Popup UI (React)            │
-└─────────────────────────────┘
-        ↓ chrome.runtime messages
-┌─────────────────────────────┐
-│ Service Worker (orchestrator)│
-└─────────────────────────────┘
-        ↓ concurrent
-┌─────────────────────────────┐
-│ Cinema Adapters (pluggable) │
-│  ├─ Star Cineplex           │
-│  ├─ Blockbuster             │
-│  └─ (add more easily)       │
-└─────────────────────────────┘
-        ↓ normalized data
-┌─────────────────────────────┐
-│ Seat Block Detection        │   ← maximal contiguous blocks
-│ Ranking (weighted scoring)  │
-└─────────────────────────────┘
-        ↓
-Ranked results, then booking (user-assisted checkout)
+```powershell
+npm.cmd install
+npm.cmd run browser:install
+npm.cmd run build
+npm.cmd start
 ```
 
-### Key Design Decisions
+Open **http://127.0.0.1:4317**. On Windows, after installation you can also double-click **start-bot.cmd**; it builds the app and starts the service.
 
-| Decision | Why |
-|----------|-----|
-| **Manifest V3** | Only supported Chrome format for new extensions |
-| **React** | Component UI, clean state handling |
-| **Pluggable adapters** | New cinemas don't touch core logic |
-| **Maximal block algorithm** | No redundant overlapping results |
-| **Weighted ranking** | Configurable (seat 40% / time 20% / cinema 15% / format 15% / price 10%) |
-| **Local-first seat processing** | Privacy + speed, no PII leaves browser |
-| **User-assisted checkout** | Never stores payment credentials; hands back to secure payment window |
+For development with dashboard live reload, run `npm.cmd run dev`.
 
-## Project Structure
+Keep the terminal/service and computer running. Closing the dashboard tab does not stop tasks. Sleeping, shutting down or stopping the service suspends execution. Saved monitoring jobs resume when the service restarts; interrupted instant searches need to be restarted from the dashboard.
 
-```
-extension/
-├── public/manifest.json        # MV3 manifest + minimal permissions
-├── src/
-│   ├── popup/                  # React UI (search → results)
-│   │   ├── index.html
-│   │   ├── index.tsx
-│   │   ├── App.tsx
-│   │   ├── styles.css
-│   │   └── components/         # SearchForm, ResultsGrid, ResultCard, LoadingState
-│   ├── background/             # service-worker.ts (orchestration + message routing)
-│   ├── content/                # bridge.ts + utils.ts (DOM interaction, booking-state detection)
-│   ├── adapters/               # base-adapter.ts, registry, star-cineplex/
-│   ├── algorithms/             # seat-block/ (detection), ranking/ (scoring)
-│   ├── types/                  # cinema.ts, seat.ts
-│   ├── services/
-│   └── utils/
-├── vite.config.ts              # Vite + chrome-extension plugin build
-└── tsconfig.json
-```
+## Dashboard workflow
 
-## Core Algorithm: Seat Block Detection
+1. **Settings → Open cinema browser:** sign in on the cinema website. Login remains in the bot's dedicated local browser profile.
+2. **New mission:** choose instant search or drop monitoring, enter the movie/date/count and select branches and time slots.
+3. Expand **Seating & automation** for allowed rows, seat tier, split seating, row preference, one-show-per-branch selection or discovery without automatic selection.
+4. For a monitor, optionally set a start time. The form uses your computer's local time and sends a timezone-aware schedule. Show-date validation uses Bangladesh time.
+5. Inspect results and proposed seats. An automatic live task opens the visible bot browser and verifies actual seat selection before advancing.
+6. When the task needs attention or is ready for payment, use **Open browser**. Complete login, any required manual step and payment yourself. **Retry selection** resumes the handoff after login. **Mark complete** records your completion; it does not claim payment was detected automatically.
 
-`src/algorithms/seat-block/index.ts`
+**Demo mode** provides a complete local demonstration with simulated seats. It never opens a live booking or buys tickets. Branch filters still apply; sample shows include Bashundhara data.
 
-- Groups seats by row, sorts by position.
-- Splits on unavailable seats / numeric gaps / aisles (windows of contiguous *available* seats).
-- Each run of contiguous seats → **one maximal `SeatBlock`** (never overlapping combos).
-- Respects seat categories (VIP, couple, etc.) when configured.
-- Uses explicit `adjacentSeatIds` from the adapter when available — **never assumes numeric adjacency implies physical adjacency**.
-- Computes a `centerScore` for ranking.
+Overview, Missions and Activity update through a live event stream and reconnect automatically. Jobs, results and bounded logs are saved in `.bot-data/tasks.json`; cinema login is stored in `.bot-data/browser-profile/`. Keep that directory private. It is excluded from Git.
 
-## Ranking
+Stop a mission to cancel future checks. Stopping an active selection closes its automation page; a page already handed over for payment stays open. You can run a task again, mark it complete or remove it when idle.
 
-`src/algorithms/ranking/scorer.ts`
+## Commands
 
-Configurable weights + presets (`bestValue`, `bestExperience`, `closestCinema`). Produces an overall score and human-readable reasoning:
+| Command                       | Purpose                                                          |
+| ----------------------------- | ---------------------------------------------------------------- |
+| `npm.cmd run dev`             | Bot and dashboard on one local port, with dashboard live reload  |
+| `npm.cmd run build`           | Typecheck and bundle the standalone app                          |
+| `npm.cmd start`               | Start the built app                                              |
+| `npm.cmd test`                | Deterministic domain, task, persistence and API tests            |
+| `npm.cmd run test:e2e`        | Local dashboard and browser-selection fixture tests; build first |
+| `npm.cmd run test:live`       | Opt-in live cinema API tests; network required                   |
+| `npm.cmd run browser:install` | Install Playwright Chromium                                      |
+| `npm.cmd run extension:build` | Build the retained legacy extension                              |
+| `npm.cmd run extension:dev`   | Run legacy extension development                                 |
 
-> ⭐ Best match — Excellent center seats + preferred time + IMAX
+PowerShell may block the `npm.ps1` shim, so Windows commands explicitly use `npm.cmd`. On other platforms, use `npm`.
 
-## Booking Flow (Security-Aware)
+## Configuration
 
-```
-Discovery → Result selected → Re-check availability → Select seats
-        → Add to cart → Checkout → User completes payment
-        → Detect confirmation page → Show 🎉 Booking Confirmed
-```
+The service binds to **127.0.0.1** and serves dashboard/API from the same origin. It is intended for one user on their own computer.
 
-- **Never stores** card numbers, CVV, OTPs, banking credentials.
-- Re-fetches seat map before booking — availability can change between discovery and checkout, so `selection succeeds` = actually verified.
-- If a CAPTCHA or payment screen appears, control hands back to the user.
+| Environment variable | Default                        | Meaning                                                     |
+| -------------------- | ------------------------------ | ----------------------------------------------------------- |
+| `BOT_PORT`           | `4317`                         | Local dashboard port                                        |
+| `BOT_DATA_DIR`       | `.bot-data` at repository root | Saved jobs and browser profile                              |
+| `BOT_HEADLESS`       | unset                          | Set to `1` for tests; leave unset for visible login/payment |
 
-## 🎯 Seat Drop Sniper (Scheduled Release Auto-Grabber)
+For example, set `$env:BOT_PORT = '4319'` before starting. The app does not automatically load `.env` files.
 
-For high-demand upcoming movie ticket releases where bookings open at a specific drop time (e.g. booking for **13th October** opening at **10th October 12:00 AM**):
+## Structure
 
-1. **Arm the Sniper**:
-   - Turn on the sniper from the extension popup (e.g. at 11:55 PM on 9th October).
-   - Enter your **target movie**, **target show date** (e.g. `2026-10-13`), and **required seats** (e.g. 2 continuous seats).
-   - Configure preferences: preferred row (Center/Middle, Back, Front), seat tier (Regular, Premium, VIP), and showtime range.
-   - Choose auto-refresh polling speed (2s, 2.5s, 5s).
-   - Set optional scheduled drop countdown or start refreshing immediately.
-
-2. **Automated Continuous Polling & Page Refresh**:
-   - The background service worker continuously queries real-time cinema inventory with cache-busting headers.
-   - Connected cinema tabs auto-refresh with a non-intrusive floating in-page HUD displaying live check counts and status.
-   - Live activity logs and counters update in real time inside the extension popup.
-
-3. **Instant Continuous Seat Acquisition**:
-   - The split second seats for the target date become available:
-     - The maximal continuous block algorithm selects the best centered seats.
-     - Automatically navigates to the seat map, clicks the seats on the SVG/DOM, and advances to checkout.
-     - Triggers an audible victory chime and desktop alert.
-     - Hands over to the user on the payment tab to finalize payment (bKash, Nagad, Card).
-
-## Getting Started
-
-```bash
-cd extension
-npm install
-npm run dev        # dev server
-npm run build      # production build → dist/
+```text
+bot/src/                  Node API, durable runner, discovery, Playwright
+dashboard/src/            React dashboard and responsive styles
+packages/core/src/        Shared adapters, algorithms, types and date helpers
+extension/                Legacy extension; domain modules re-export shared core
+tests/e2e/                Dashboard and local cinema-page fixtures
+scripts/dev.mjs           Combined development server
+scripts/build.mjs         Typecheck and production builds
+.bot-data/                Local runtime state (ignored)
 ```
 
-### Load into Chrome (unpacked)
+See [ARCHITECTURE.md](ARCHITECTURE.md) and [STACK.md](STACK.md). Previous extension documentation is retained at [extension/README.md](extension/README.md).
 
-1. Go to `chrome://extensions`
-2. Enable **Developer mode**
-3. Click **Load unpacked**
-4. Select the `extension/dist` folder (after `npm run build`)
+## Verification and integration limits
 
-## Testing
+The migration is verified with deterministic unit/API tests and local browser fixtures covering cancellation, restoration, mobile layout and selected-seat verification. Fixtures do not make real reservations.
 
-```bash
-npm test           # vitest: seat-block detection, ranking, edge cases
-```
+The Star Cineplex catalog/layout adapter is reused from the existing system. Discovery layouts remain candidate estimates; the browser reads the live seat DOM before selection. Website/API or DOM changes may require adapter/selector updates. If login, CAPTCHA, unavailable seats or an unrecognized step prevents automation, the task hands the page to you. The dashboard does not collect payment credentials, and payment is never submitted automatically.
 
-Test coverage includes:
-
-- Maximal block detection (no overlapping combos)
-- Multiple rows / mixed statuses / empty maps
-- Aisle gaps and seat category filtering
-- Center-score ranking
-- Optimal seat selection within a block
-
-## Adding a New Cinema
-
-1. Create `src/adapters/<cinema>/adapter.ts`.
-2. Extend `CinemaAdapter` and implement: `searchMovies`, `getShowtimes`, `getSeatMap`, `selectSeats`, `addToCart`, `checkout`.
-3. Register it in `src/background/service-worker.ts`.
-4. Add its domain to `manifest.json` (`host_permissions` + `content_scripts.matches`).
-
-The core never changes — it only speaks through the adapter interface. See `docs/ADAPTER_GUIDE.md` (planned) for details.
-
-## Legal & Ethical Constraints
-
-- Operates only where automated interaction is permitted.
-- Does **not** bypass CAPTCHAs, bot detection, authentication, rate limits, or security controls.
-- When automation isn't permitted, the extension hands the user the booking page to continue manually.
-- Never attempts to purchase via unauthorized methods.
-
-## Roadmap
-
-- [x] MVP: search → discovery → seat-block detection → ranking → re-verify → user-assisted checkout
-- [ ] Backend (movie/cinema metadata cache, preferences, analytics) — optional, local-first stays default
-- [ ] Second cinema adapter
-- [ ] Seat map visual viewer in popup
-- [ ] Booking state machine + confirmation detection polish
+Use supported cinema flows where automated interaction is permitted. The bot does not bypass authentication, CAPTCHA, rate limits or security controls.

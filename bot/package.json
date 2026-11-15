@@ -1,0 +1,12 @@
+{
+  "name": "@movie-ticket/bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "playwright": "1.63.0"
+  },
+  "scripts": {
+    "build": "vite build --config vite.config.ts"
+  }
+}

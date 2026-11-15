@@ -1,19 +1,27 @@
 {
   "name": "movie-ticket-assistant",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "workspaces": [
-    "extension"
+    "extension",
+    "packages/core",
+    "bot",
+    "dashboard"
   ],
   "scripts": {
-    "dev": "npm run dev --workspace=extension",
-    "build": "npm run build --workspace=extension",
-    "test": "vitest",
-    "test:ui": "vitest --ui",
+    "dev": "node scripts/dev.mjs",
+    "build": "node scripts/build.mjs",
+    "start": "node bot/dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "extension:dev": "npm run dev --workspace=extension",
+    "extension:build": "npm run build --workspace=extension",
+    "browser:install": "playwright install chromium",
     "lint": "eslint . --ext .ts,.tsx",
-    "format": "prettier --write \"**/*.{ts,tsx,json,md}\""
+    "format": "prettier --write \"**/*.{ts,tsx,json,md}\"",
+    "test:live": "vitest run --config vitest.live.config.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.40.0",
@@ -23,9 +31,13 @@
     "eslint-config-prettier": "^9.0.0",
     "prettier": "^3.1.0",
     "typescript": "^5.3.2",
-    "vitest": "^5.0.0"
+    "vitest": "^5.0.0",
+    "@types/node": "^22.0.0"
   },
   "dependencies": {
     "vite": "8.2.2"
+  },
+  "engines": {
+    "node": ">=22.12"
   }
 }

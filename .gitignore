@@ -1,0 +1,12 @@
+node_modules/
+**/dist/
+.npm-cache/
+.bot-data/
+.bot-test-data/
+test-results/
+playwright-report/
+coverage/
+*.log
+.env
+.env.*
+!.env.example
