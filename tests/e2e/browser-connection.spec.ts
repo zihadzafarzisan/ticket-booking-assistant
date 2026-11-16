@@ -1,9 +1,106 @@
 import { test, expect, chromium } from "@playwright/test";
-import { createServer } from "node:net";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { createServer, connect, type Socket } from "node:net";
+import { createServer as createHttpServer } from "node:http";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { BrowserConnection } from "../../bot/src/browser-connection";
 import { BrowserDriver } from "../../bot/src/browser";
+
+test("connects once through Chrome-style 404 discovery and a delayed approval handshake", async () => {
+  await mkdir(".bot-test-data", { recursive: true });
+  const root = await mkdtemp(resolve(".bot-test-data", "approval-cdp-"));
+  const portProbe = createServer();
+  await new Promise<void>((done) => portProbe.listen(0, "127.0.0.1", done));
+  const portAddress = portProbe.address();
+  if (!portAddress || typeof portAddress === "string")
+    throw new Error("Missing port");
+  const upstreamPort = portAddress.port;
+  await new Promise<void>((done) => portProbe.close(() => done()));
+  const owner = await chromium.launchPersistentContext(
+    resolve(root, "test-owner"),
+    { headless: true, args: [`--remote-debugging-port=${upstreamPort}`] },
+  );
+  const sockets = new Set<Socket>();
+  let connections = 0;
+  const gateway = createHttpServer((_request, response) => {
+    response.writeHead(404);
+    response.end();
+  });
+  gateway.on("upgrade", (request, client, head) => {
+    connections++;
+    sockets.add(client);
+    client.on("error", () => {});
+    // Simulate Chrome waiting for the user to approve a single connection.
+    setTimeout(() => {
+      if (client.destroyed) return;
+      const upstream = connect(upstreamPort, "127.0.0.1", () => {
+        const headers = request.rawHeaders.reduce<string[]>(
+          (values, value, index) =>
+            index % 2
+              ? values
+              : [...values, `${value}: ${request.rawHeaders[index + 1]}`],
+          [],
+        );
+        upstream.write(
+          `GET ${request.url} HTTP/1.1\r\n${headers.join("\r\n")}\r\n\r\n`,
+        );
+        if (head.length) upstream.write(head);
+        client.pipe(upstream);
+        upstream.pipe(client);
+      });
+      sockets.add(upstream);
+      upstream.on("error", () => client.destroy());
+      client.on("close", () => upstream.destroy());
+    }, 350);
+  });
+  await new Promise<void>((done) => gateway.listen(0, "127.0.0.1", done));
+  const address = gateway.address();
+  if (!address || typeof address === "string")
+    throw new Error("Missing proxy port");
+  const connection = new BrowserConnection(root, {
+    executablePath: "must-not-launch.exe",
+  });
+  try {
+    const version = await (
+      await fetch(`http://127.0.0.1:${upstreamPort}/json/version`)
+    ).json();
+    await mkdir(resolve(root, "regular-browser"));
+    await writeFile(
+      resolve(root, "regular-browser", "DevToolsActivePort"),
+      `${address.port}\n${new URL(version.webSocketDebuggerUrl).pathname}\n`,
+    );
+    await connection.configure({
+      endpoint: `http://127.0.0.1:${address.port}`,
+    });
+    const [first, second] = await Promise.all([
+      connection.openRegular(),
+      connection.openRegular(),
+    ]);
+    expect(first).toBe(second);
+    expect(connections).toBe(1);
+    const page = await first.newPage();
+    await page.setContent("<title>Approval connection works</title>");
+    expect(await page.title()).toBe("Approval connection works");
+    await connection.disconnect();
+    expect(owner.pages().some((item) => item.url() === "about:blank")).toBe(
+      true,
+    );
+  } finally {
+    await connection.disconnect();
+    for (const socket of sockets) socket.destroy();
+    gateway.closeAllConnections();
+    await new Promise<void>((done) => gateway.close(() => done()));
+    await owner.close();
+    if (!root.startsWith(resolve(".bot-test-data") + sep))
+      throw new Error("Unexpected cleanup path");
+    await rm(root, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    });
+  }
+});
 
 test("attaches to an open regular browser, reuses its session and leaves tabs open on disconnect", async () => {
   await mkdir(".bot-test-data", { recursive: true });

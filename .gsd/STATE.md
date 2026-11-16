@@ -2,6 +2,13 @@
 
 Updated: 2026-11-16
 
+## Chrome approval connection repair
+
+- Diagnosed the user's installed Chrome on port 9222: HTTP discovery returns 404 while the local DevToolsActivePort file exposes an approval-based browser WebSocket.
+- Added matching-port local endpoint discovery, explicit local browser WebSockets, a two-minute consent wait, single concurrent attachment and clear permission guidance. Failed approval/occupied ports no longer trigger another browser launch.
+- Four regressions failed before the fix. Unit/API suite now passes 86 tests; actual Chromium regression covers 404 discovery, delayed approval handshake and shared connection attempts. Dashboard waiting guidance screenshot inspected.
+- Activated the update in the local bot and confirmed `/api/browser/connect` HTTP 200: existing regular Chrome connected, two tabs, three missions preserved. The user approved Chrome's browser prompt. No reservation or payment was performed.
+
 ## Browser and Cineplex login update
 
 - Implemented regular default-context CDP attachment to existing local Chrome/Edge, normal persistent-browser setup when needed, cinema-tab/session reuse and disconnect without closing attached browser tabs. Ordinary browsers need debugging access enabled; setup and limitations are explained in Settings and README.

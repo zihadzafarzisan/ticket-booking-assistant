@@ -2,6 +2,10 @@ import { chromium, type Browser, type BrowserContext } from "playwright";
 import { spawn } from "node:child_process";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { homedir } from "node:os";
+
+const browserPath = /^\/devtools\/browser(?:\/[a-zA-Z0-9-]+)?$/;
+class BrowserUnavailableError extends Error {}
 
 export function validateBrowserEndpoint(raw: unknown): string {
   let url: URL;
@@ -13,23 +17,27 @@ export function validateBrowserEndpoint(raw: unknown): string {
     );
   }
   if (
-    url.protocol !== "http:" ||
+    !["http:", "ws:"].includes(url.protocol) ||
     !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) ||
     url.username ||
     url.password ||
-    url.pathname !== "/" ||
+    (url.protocol === "http:"
+      ? url.pathname !== "/"
+      : !browserPath.test(url.pathname)) ||
     url.search ||
     url.hash ||
     !url.port
   )
     throw new Error(
-      "Browser address must use loopback HTTP with a port and no path or credentials.",
+      "Use a loopback HTTP address or browser WebSocket with a port and no credentials. WebSocket paths must start with /devtools/browser.",
     );
-  return url.origin;
+  return url.protocol === "http:" ? url.origin : url.href;
 }
 export class BrowserConnection {
   private endpoint = "http://127.0.0.1:9222";
   private browser?: Browser;
+  private pending?: Promise<BrowserContext>;
+  private opening?: Promise<BrowserContext>;
   constructor(
     private directory: string,
     private launchOptions: { executablePath?: string; headless?: boolean } = {},
@@ -64,23 +72,95 @@ export class BrowserConnection {
   }
   private async attach(): Promise<BrowserContext> {
     if (this.browser?.isConnected()) return this.browser.contexts()[0];
-    const version = await fetch(`${this.endpoint}/json/version`, {
-      signal: AbortSignal.timeout(2000),
-      redirect: "error",
-    });
-    if (!version.ok) throw new Error("Browser debugging is unavailable.");
-    const data = (await version.json()) as { webSocketDebuggerUrl?: string };
-    const socket = new URL(data.webSocketDebuggerUrl || "");
+    if (this.pending) return this.pending;
+    const pending = this.attachOnce();
+    this.pending = pending;
+    try {
+      return await pending;
+    } finally {
+      if (this.pending === pending) this.pending = undefined;
+    }
+  }
+  private async attachOnce(): Promise<BrowserContext> {
+    const endpoint = new URL(this.endpoint);
+    let approval = endpoint.protocol === "ws:";
+    let socket: URL;
+    if (endpoint.protocol === "ws:") socket = endpoint;
+    else {
+      let version: Response;
+      try {
+        version = await fetch(`${this.endpoint}/json/version`, {
+          signal: AbortSignal.timeout(2000),
+          redirect: "error",
+        });
+      } catch (error) {
+        const cause = (
+          error as { cause?: { code?: string; errors?: { code?: string }[] } }
+        ).cause;
+        if (
+          cause?.code === "ECONNREFUSED" ||
+          (cause?.errors?.length &&
+            cause.errors.every((item) => item.code === "ECONNREFUSED"))
+        )
+          throw new BrowserUnavailableError(
+            "No browser is listening at this address.",
+          );
+        throw new Error(
+          "The browser address did not respond. Check the address in Settings before retrying.",
+        );
+      }
+      if (version.status === 404) {
+        // Chrome 144+ approval-based debugging deliberately has no HTTP discovery.
+        // Its existing profile publishes the browser path in DevToolsActivePort.
+        approval = true;
+        socket = new URL(
+          (await this.activeSocket(endpoint)) ||
+            `ws://${endpoint.host}/devtools/browser`,
+        );
+      } else {
+        if (!version.ok)
+          throw new Error(
+            "The browser address is occupied by another service or debugging is unavailable. Check its port in Settings.",
+          );
+        try {
+          const data = (await version.json()) as {
+            webSocketDebuggerUrl?: string;
+          };
+          socket = new URL(data.webSocketDebuggerUrl || "");
+        } catch {
+          throw new Error(
+            "The browser address is occupied by another service. Use the debugging address shown by Chrome or Edge.",
+          );
+        }
+      }
+    }
     if (
       socket.protocol !== "ws:" ||
       !["127.0.0.1", "localhost", "[::1]"].includes(socket.hostname) ||
       socket.username ||
-      socket.password
+      socket.password ||
+      socket.port !== endpoint.port ||
+      !browserPath.test(socket.pathname) ||
+      socket.search ||
+      socket.hash
     )
       throw new Error("The browser must expose a local debugging connection.");
-    const browser = await chromium.connectOverCDP(socket.href, {
-      timeout: 5000,
-    });
+    let browser: Browser;
+    try {
+      browser = await chromium.connectOverCDP(socket.href, {
+        timeout: approval ? 120_000 : 5000,
+      });
+    } catch (error) {
+      const reason = (error as Error).message
+        .split("\n")[0]
+        .replace(/wss?:\/\/\S+/g, "[local browser]");
+      console.warn(`Browser connection failed: ${reason}`);
+      throw new Error(
+        approval
+          ? "Chrome needs your approval. In your open Chrome window, choose Allow for remote debugging, then retry Connect existing browser. If no prompt appears, enable access at chrome://inspect/#remote-debugging and use the address shown there."
+          : "The browser is running but its debugging connection failed. Check the address in Settings; no additional browser was opened.",
+      );
+    }
     const context = browser.contexts()[0];
     if (!context) {
       await browser.close();
@@ -89,19 +169,71 @@ export class BrowserConnection {
     this.browser = browser;
     return context;
   }
+  private async activeSocket(endpoint: URL): Promise<string | undefined> {
+    const profiles = [resolve(this.directory, "regular-browser")];
+    if (process.platform === "win32" && process.env.LOCALAPPDATA)
+      profiles.push(
+        resolve(process.env.LOCALAPPDATA, "Google/Chrome/User Data"),
+        resolve(process.env.LOCALAPPDATA, "Microsoft/Edge/User Data"),
+      );
+    else if (process.platform === "darwin")
+      profiles.push(
+        resolve(homedir(), "Library/Application Support/Google/Chrome"),
+        resolve(homedir(), "Library/Application Support/Microsoft Edge"),
+      );
+    else if (process.platform !== "win32") {
+      const config =
+        process.env.XDG_CONFIG_HOME || resolve(homedir(), ".config");
+      profiles.push(
+        resolve(config, "google-chrome"),
+        resolve(config, "chromium"),
+        resolve(config, "microsoft-edge"),
+      );
+    }
+    for (const profile of profiles) {
+      try {
+        const [port, path] = (
+          await readFile(resolve(profile, "DevToolsActivePort"), "utf8")
+        )
+          .split(/\r?\n/)
+          .map((value) => value.trim());
+        if (port === endpoint.port && browserPath.test(path || ""))
+          return `ws://${endpoint.host}${path}`;
+      } catch {
+        /* A missing/inaccessible profile is not permission to read other profile data. */
+      }
+    }
+  }
   async connect(): Promise<BrowserContext> {
     try {
       return await this.attach();
-    } catch {
+    } catch (error) {
+      if (!(error instanceof BrowserUnavailableError)) throw error;
       throw new Error(
         "Cannot connect to your browser. In Settings, enable browser access or choose Open regular browser, then retry. Browsers need local debugging enabled before the bot can use their tabs.",
       );
     }
   }
   async openRegular(): Promise<BrowserContext> {
+    if (this.opening) return this.opening;
+    const opening = this.openRegularOnce();
+    this.opening = opening;
+    try {
+      return await opening;
+    } finally {
+      if (this.opening === opening) this.opening = undefined;
+    }
+  }
+  private async openRegularOnce(): Promise<BrowserContext> {
     try {
       return await this.attach();
-    } catch {}
+    } catch (error) {
+      if (!(error instanceof BrowserUnavailableError)) throw error;
+    }
+    if (new URL(this.endpoint).protocol !== "http:")
+      throw new Error(
+        "A browser WebSocket is for connecting to an existing browser. Use a local HTTP address to open a regular browser.",
+      );
     const executable =
       this.launchOptions.executablePath || (await findBrowser());
     const profile = resolve(this.directory, "regular-browser");
@@ -123,18 +255,25 @@ export class BrowserConnection {
       windowsHide: false,
     });
     let launchError = false;
+    let exitCode: number | null | undefined;
     child.once("error", () => {
       launchError = true;
+    });
+    child.once("exit", (code) => {
+      exitCode = code;
     });
     child.unref();
     for (let attempt = 0; attempt < 40 && !launchError; attempt++) {
       try {
         return await this.attach();
-      } catch {}
+      } catch (error) {
+        if (!(error instanceof BrowserUnavailableError)) throw error;
+      }
+      if (exitCode !== undefined) break;
       await new Promise((done) => setTimeout(done, 250));
     }
     throw new Error(
-      "Could not open the regular browser. Check that the local debugging port is available, then retry in Settings.",
+      "The regular browser exited before debugging became available. Close only the cinema profile window and retry, or connect to your existing browser in Settings.",
     );
   }
   async disconnect() {

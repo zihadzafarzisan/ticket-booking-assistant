@@ -150,12 +150,21 @@ export function CinemaSettings({
           <Icon name="browser" size={17} />
           {busy === "open" ? "Opening…" : "Open regular browser"}
         </button>
+        {(busy === "connect" || busy === "open") && (
+          <p role="status" className="settings-copy">
+            Check your open Chrome window. If Chrome asks to allow remote
+            debugging, choose Allow. Connecting can take up to two minutes while
+            you approve.
+          </p>
+        )}
         <details className="browser-help">
           <summary>Connect a browser that is already open</summary>
           <p>
-            Chrome or Edge must have local debugging enabled before the bot can
-            control its tabs. Enter its local address above. An ordinary browser
-            started without this access cannot be attached automatically.
+            In Chrome 144 or newer, open chrome://inspect/#remote-debugging and
+            enable remote debugging for this browser instance. Enter the local
+            address shown there, then choose Connect existing browser and Allow
+            in Chrome's permission prompt. Keep Chrome open while connecting.
+            Local browser WebSocket addresses are also supported.
           </p>
           <p>
             For simple setup, choose Open regular browser. This opens Chrome or
@@ -163,7 +172,7 @@ export function CinemaSettings({
             that window. The bot reuses it for future bookings.
           </p>
           <a
-            href="https://developer.chrome.com/blog/remote-debugging-port"
+            href="https://developer.chrome.com/docs/devtools/agents/get-started/configuration/"
             target="_blank"
             rel="noreferrer"
           >

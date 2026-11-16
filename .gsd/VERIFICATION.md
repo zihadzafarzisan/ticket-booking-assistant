@@ -30,3 +30,9 @@ The in-app browser preview host was unavailable. Visual QA used screenshots from
 - `npm.cmd run test:smoke -- --skip-build`: five production fixture checks passed. No live reservation or payment was made.
 - Inspected `test-results/cineplex-settings.png` and `test-results/cineplex-settings-mobile.png`: forms are readable, no horizontal overflow, saved passwords are not displayed.
 - Inspected the public Cineplex sign-in redirect and rendered form read-only: `/api/auth/sign-in` leads to `/login`, with email/password fields and a Sign in button. Actual account login remains dependent on the user's credentials and provider availability.
+# Chrome approval connection repair — 2026-11-16
+
+- Production build, 86 unit/API tests and all 21 browser tests passed. Four new regressions reproduced the failure before the fix.
+- Browser fixture verifies actual CDP transport behind an HTTP-404 discovery server and delayed WebSocket handshake; concurrent requests create one connection attempt. Dashboard fixture verifies visible Chrome approval guidance while awaiting connection. Inspected `test-results/chrome-approval-guidance.png`.
+- Five production fixture smoke checks passed.
+- Installed-session proof: after the user's Chrome approval, production `POST /api/browser/connect` returned HTTP 200 in three seconds, with `connected: true`, `pages: 2`, `headless: false`, `mode: regular`. Subsequent `/api/state` confirmed the connection remained active and all three saved missions remained present. No real reservation/payment was executed.

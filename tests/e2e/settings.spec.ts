@@ -1,5 +1,34 @@
 import { test, expect } from "@playwright/test";
 
+test("shows Chrome approval guidance during an existing-browser connection", async ({
+  page,
+}) => {
+  let release!: () => void;
+  const pending = new Promise<void>((done) => {
+    release = done;
+  });
+  await page.route("**/api/browser/connect", async (route) => {
+    await pending;
+    await route.fulfill({
+      json: { connected: true, pages: 1, headless: false, mode: "regular" },
+    });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Connect existing browser", exact: true })
+    .click();
+  await expect(page.getByRole("status")).toContainText("choose Allow");
+  await page.screenshot({
+    path: "test-results/chrome-approval-guidance.png",
+    fullPage: true,
+  });
+  release();
+  await expect(page.getByRole("status")).toContainText(
+    "Connected to your open browser",
+  );
+});
+
 test("save, replace and remove Cineplex credentials without retrieving the password", async ({
   page,
   request,

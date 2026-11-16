@@ -3,6 +3,15 @@ status: resolved
 trigger: "i tried but its not working, bot isnot taking any seats"
 ---
 
+## Follow-up: regular browser launch failure (resolved)
+
+- User reproduced `Could not open the regular browser`. Port 9222 belongs to the user's normally started installed Chrome. `/json/version`, `/json/version/` and `/json/list` all return HTTP 404 with an empty body.
+- Chrome's local default-profile `DevToolsActivePort` exists and publishes port 9222 plus a browser WebSocket path. Official Chrome documentation and upstream debugger reports confirm Chrome 144+ approval-based debugging intentionally omits HTTP discovery.
+- Old code caught every attachment error, spawned another browser on the occupied port, then hid the cause behind a generic launch error.
+- Added four regressions; all failed before the fix. Implemented active-port WebSocket discovery for matching local ports, explicit loopback browser WebSockets, a two-minute consent wait, clear approval guidance, and launch only on connection refused. A real Chromium regression simulates HTTP 404 discovery and a delayed WebSocket handshake, including concurrent calls sharing one connection attempt.
+- The first installed-browser attempt expired during Chrome setup; its active endpoint changed. Extended the consent wait, refreshed the endpoint and retried after the user's approval. The production app's `/api/browser/connect` returned HTTP 200 in three seconds with `{ connected: true, pages: 2, headless: false, mode: regular }`. A later state request confirmed the connection remained active. All three saved missions were preserved; no seat reservation/payment was triggered.
+- Production build, 86 unit/API tests, browser regressions and five fixture smoke checks passed. The actual installed Chrome connection was verified through the application API, without desktop UI automation.
+
 ## Follow-up: API route not found (resolved)
 
 - The production bot on port 4317 was still PID 34316, started at 01:56, before the current build at 02:31. The dashboard was served from the new build while the server kept the older routes in memory.
