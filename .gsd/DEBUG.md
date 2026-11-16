@@ -3,6 +3,13 @@ status: resolved
 trigger: "i tried but its not working, bot isnot taking any seats"
 ---
 
+## Follow-up: latest movie task does not select seats (resolved diagnosis)
+
+- Reported task `5e211280-f96f-4f02-a429-588ed7ae950a` selects Dune: Part Three (`ca2a0022-5a8f-404c-af68-1e7e0fa601c0`), 18 November, two seats at Military Museum, later narrowed to afternoon. Live inventory has no published shows for this movie on any date.
+- Task history confirms it was created as a monitor and correctly found no shows, then the user stopped it, changed it to instant search and retried. The browser was never reached. Catalog incorrectly flags this movie as now showing while its release date is 18 December and no show exists.
+- Fixed the misleading running-movie filter/count and badges: published screenings are required, and catalog-only movies remain visible under Upcoming & unannounced/all catalog. Detailed empty-search reasons now persist in mission state/activity and appear in mission detail and Adjust search. A watch action is explicit; no movie, date, location or task mode is silently substituted.
+- Build, 93 unit/API tests, 30 browser tests and five smoke checks passed. New browser fixture follows a catalog-only film through an actual watch task and confirms a waiting reason with no browser connection. Screenshots of mission detail and Adjust search were inspected.
+- This does not create a real screening: Dune cannot be selected until Cineplex publishes one. No real seats were reserved and the user's mission preferences were not changed.
 ## Follow-up: regular browser launch failure (resolved)
 
 - User reproduced `Could not open the regular browser`. Port 9222 belongs to the user's normally started installed Chrome. `/json/version`, `/json/version/` and `/json/list` all return HTTP 404 with an empty body.

@@ -9,6 +9,7 @@ import type { TaskInput } from "../../bot/src/contracts";
 import { getTimeSlot } from "../../packages/core/src";
 import { Icon } from "./icons";
 import type { MovieBookingChoice } from "./MovieBooking";
+import { movieCatalogState } from "../../bot/src/availability";
 
 const labels: Record<TicketStatus, string> = {
   open: "Online sales open",
@@ -73,7 +74,9 @@ export default function LiveCineplex({
     (movie) =>
       (!query || movie.title.toLowerCase().includes(query.toLowerCase())) &&
       (movieScope === "all" ||
-        (movieScope === "now" ? movie.isNowShowing : movie.isUpcoming)),
+        (movieScope === "now"
+          ? movieCatalogState(movie, shows, today) === "showing"
+          : movieCatalogState(movie, shows, today) !== "showing")),
   );
   const changes = inventory?.changes || [];
   const newlyOpened = new Set(changes.map((change) => change.showId));
@@ -354,7 +357,7 @@ export default function LiveCineplex({
                 }
               >
                 <option value="now">Now showing</option>
-                <option value="upcoming">Coming soon</option>
+                <option value="upcoming">Upcoming & unannounced</option>
                 <option value="all">All catalog movies</option>
               </select>
             </label>
@@ -409,6 +412,12 @@ export default function LiveCineplex({
             </div>
             <div className="live-movie-grid">
               {movies.map((movie) => {
+                const published = shows.some(
+                  (show) =>
+                    show.movie.id === movie.id &&
+                    show.date >= today &&
+                    show.ticketStatus !== "started",
+                );
                 const options = scoped.filter((s) => s.movie.id === movie.id);
                 const open = options.filter((s) => s.ticketStatus === "open");
                 return (
@@ -431,11 +440,14 @@ export default function LiveCineplex({
                         />
                       )}
                       <span>
-                        {movie.isNowShowing
-                          ? "NOW SHOWING"
-                          : movie.isUpcoming
-                            ? "COMING SOON"
-                            : "CATALOG"}
+                        {!published
+                          ? "SHOWS NOT PUBLISHED"
+                          : movieCatalogState(movie, shows, today) === "showing"
+                            ? "NOW SHOWING"
+                            : movieCatalogState(movie, shows, today) ===
+                                "upcoming"
+                              ? "COMING SOON"
+                              : "SHOWS NOT PUBLISHED"}
                       </span>
                     </button>
                     <div className="live-movie-info">

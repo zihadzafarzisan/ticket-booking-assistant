@@ -23,6 +23,17 @@ export class DiscoveryService {
     private live: CinemaAdapter = new StarCineplexAdapter(),
     private demo: CinemaAdapter = new DemoAdapter(),
   ) {}
+  async explainEmptyResult(
+    input: TaskInput,
+  ): Promise<{ title: string; message: string } | undefined> {
+    if (input.source !== "live") return undefined;
+    const adapter = this.live as CinemaAdapter & {
+      explainEmptyResult?(
+        input: TaskInput,
+      ): Promise<{ title: string; message: string }>;
+    };
+    return adapter.explainEmptyResult?.(input);
+  }
 
   async search(input: TaskInput, signal: AbortSignal): Promise<Candidate[]> {
     const adapter = input.source === "demo" ? this.demo : this.live;

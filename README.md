@@ -27,6 +27,8 @@ Keep the terminal/service and computer running. Closing the dashboard tab does n
 
 Open **Live Cineplex** to browse now-showing or upcoming movies, filter by branch/date and inspect sales states: online sales open, sold out, not yet open, closed or counter-only. The feed refreshes every 30 seconds; **Refresh now** requests an immediate update. Live missions request fresh inventory during their checks.
 
+The running-movie view requires a future published screening, not only a catalog flag. Movies with no announced screenings remain under **Upcoming & unannounced** or all catalog, with **Shows not published** badges. If a mission cannot reach a seat page, its detail/activity and **Adjust search** explain whether the movie has no schedule, the selected date/location/time excludes shows, or sales/seating are unavailable. A watch task cannot open a seat page until a qualifying show exists.
+
 Hall names come from public metadata for published shows. A hall with “tickets open” has online sales open for at least one listed show; this does not indicate physical opening hours. Ticket counts are provider-reported aggregates, and actual seat selection is verified in the cinema browser.
 
 Click a movie poster, title or **Choose date & seats** to open its booking dialog. Pick any future date, number of seats and one or more locations. The dialog immediately shows reported availability for those exact choices, showtimes/halls, and buttons for other published dates. The selected catalog movie ID is retained, so another title match cannot be booked accidentally. Aggregate seat counts do not guarantee a consecutive group; the bot verifies the actual map in your browser.

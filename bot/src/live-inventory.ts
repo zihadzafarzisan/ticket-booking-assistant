@@ -1,4 +1,5 @@
 import { STAR_CINEPLEX_LOCATIONS } from "../../packages/core/src";
+import { movieCatalogState } from "./availability";
 import type { ScreenType } from "../../packages/core/src";
 import type {
   InventoryChange,
@@ -217,7 +218,14 @@ export class LiveInventoryService {
     }));
     base.halls = aggregateHalls(base.shows, now);
     base.counts = {
-      nowShowingMovies: base.movies.filter((m) => m.isNowShowing).length,
+      nowShowingMovies: base.movies.filter(
+        (movie) =>
+          movieCatalogState(
+            movie,
+            base.shows,
+            new Date(now + 6 * 3600_000).toISOString().slice(0, 10),
+          ) === "showing",
+      ).length,
       openShows: base.shows.filter((s) => s.ticketStatus === "open").length,
       hallsWithOpenTickets: base.halls.filter((h) => h.openShows > 0).length,
       reportedAvailableSeats: base.shows

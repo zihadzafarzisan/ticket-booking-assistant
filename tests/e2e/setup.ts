@@ -9,6 +9,15 @@ export default async function setup() {
     .toISOString()
     .slice(0, 10);
   const fixture = inventoryFixture(tomorrow);
+  const unannounced = {
+    ...fixture.movies[0],
+    id: "movie-unannounced",
+    title: { en: "Unannounced Film" },
+    isNowShowing: true,
+    isUpcoming: false,
+  };
+  Object.assign(unannounced, { localReleaseDate: "2099-12-18" });
+  fixture.movies.push(unannounced);
   const inventory = new LiveInventoryService(fixture.fetcher);
   await inventory.refresh();
   const bot = await startBot({

@@ -1,5 +1,12 @@
 # Verification journal
 
+## 2026-11-17 — Unpublished movie diagnosis
+
+- Traced the user's actual Dune mission: zero published shows for its exact catalog ID on any date. Its initial monitor was changed to instant search by the user. No browser selection was reached.
+- `npm.cmd run build`: passed. `npm.cmd test`: `93 passed (93)` across ten suites. `npm.cmd run test:e2e`: `30 passed (36.4s)`. Fixture production smoke: five checks passed.
+- Added catalog-flag-without-screening, date/location/time explanations and persisted runner wait-reason coverage. Full browser flow creates an unpublished-movie watch mission and confirms the browser remains disconnected.
+- Inspected `test-results/unpublished-mission.png` and `test-results/unpublished-adjust-search.png`: both prominently explain why no seat page can open. No real reservation/payment was performed.
+
 ## 2026-11-17 — Movie-first booking, date availability and gateway handoff
 
 - `npm.cmd run build`: bot/dashboard typechecks and production bundles passed.

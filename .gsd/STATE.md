@@ -2,6 +2,12 @@
 
 Updated: 2026-11-17
 
+## Latest failure: catalog movie without screenings
+
+- The user's Dune: Part Three / 18 November / Military Museum task has no published show on any date. Read-only discovery with the exact saved preferences returned zero candidates and `Waiting for show announcements`; the browser could not be reached because there is no seat page.
+- The original task was a watch, later stopped/changed to instant by the user. Preserved those preferences. Corrected misleading now-showing flags/counts, added explicit unpublished badges and persisted empty-search reasons in activity/detail/editing.
+- Build, 93 unit/API tests, 30 browser tests and five smoke checks passed. Actual-provider read-only reproduction confirmed the diagnosis. No real reservation/payment was performed.
+
 ## Movie-first booking
 
 - Catalog posters/titles/actions open a dedicated movie booking dialog. Date, seat count and location choices drive immediate availability, published showtimes and upcoming date previews. Unpublished schedules are distinguished from sold out and stale inventory disables booking.

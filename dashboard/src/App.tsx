@@ -15,6 +15,7 @@ import LiveCineplex from "./LiveCineplex";
 import { CinemaSettings } from "./CinemaSettings";
 import MovieBooking, { type MovieBookingChoice } from "./MovieBooking";
 import type { LiveInventory } from "../../bot/src/live-types";
+import { explainMovieAvailability } from "../../bot/src/availability";
 
 const statusLabels: Record<TaskStatus, string> = {
   queued: "Queued",
@@ -251,6 +252,17 @@ export default function App() {
     [tasks],
   );
   const selected = tasks.find((t) => t.id === selectedId);
+  const selectedWaitReason =
+    selected && selected.input.source === "live" && !selected.results.length
+      ? inventory?.status === "live"
+        ? explainMovieAvailability(
+            inventory.movies,
+            inventory.shows,
+            inventory.branches,
+            selected.input,
+          )
+        : selected.waitReason
+      : undefined;
   const visible = tasks.filter(
     (t) =>
       (!query ||
@@ -1137,15 +1149,38 @@ export default function App() {
                         />
                       </span>
                       <h3>
-                        {running.includes(selected.status)
-                          ? "Your bot is on the lookout."
-                          : "No matching seats yet."}
+                        {selectedWaitReason &&
+                        !["scanning", "selecting"].includes(selected.status)
+                          ? selectedWaitReason.title
+                          : running.includes(selected.status)
+                            ? "Your bot is on the lookout."
+                            : "No matching seats yet."}
                       </h3>
                       <p>
-                        {running.includes(selected.status)
-                          ? "Feel free to close this tab. Monitoring continues while the bot service is running."
-                          : "Run another check or create a mission with different preferences."}
+                        {selectedWaitReason &&
+                        !["scanning", "selecting"].includes(selected.status)
+                          ? selectedWaitReason.message
+                          : running.includes(selected.status)
+                            ? "Feel free to close this tab. Monitoring continues while the bot service is running."
+                            : "Run another check or create a mission with different preferences."}
                       </p>
+                      {selectedWaitReason &&
+                        !running.includes(selected.status) &&
+                        !["completed", "stopped"].includes(selected.status) && (
+                          <button
+                            className="button secondary"
+                            onClick={() => {
+                              setMissionSeed({
+                                ...selected.input,
+                                mode: "monitor",
+                              });
+                              setEditingTaskId(selected.id);
+                              setShowForm(true);
+                            }}
+                          >
+                            Watch selected date
+                          </button>
+                        )}
                     </div>
                   )}
                 </section>
@@ -1317,6 +1352,7 @@ export default function App() {
           )}
           movies={inventory?.movies}
           branches={inventory?.branches}
+          inventory={inventory}
           onClose={() => {
             setShowForm(false);
             setMissionSeed(undefined);

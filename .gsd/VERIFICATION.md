@@ -42,3 +42,8 @@ The in-app browser preview host was unavailable. Visual QA used screenshots from
 - Catalog movie selection now retains the exact movie ID; selected-date availability uses date/count/location filters, differentiates unpublished schedules from sold out and does not authorize booking from stale inventory.
 - Published opening metadata display and unavailable-date monitoring payloads are tested. No opening timestamp is inferred when the current public feed omits it.
 - Actual test-browser transport verifies same-tab and popup gateway redirects after exact seat selection, stops at the hosted gateway, leaves ambiguous charge controls manual and preserves checkout selection on retry. Real reservations/payments were not performed.
+# Unpublished screening diagnosis — 2026-11-17
+
+- Exact failed Dune mission reproduced read-only against current public data: zero candidates, `Waiting for show announcements`, no seat page available on any date. No real browser selection was attempted.
+- Build passed; 93 unit/API tests, 30 browser tests and five production smoke checks passed. Catalog-only movie fixtures no longer appear under running movies, and a real fixture watch task persists its reason while the browser stays disconnected.
+- Inspected unpublished mission/editing screenshots. User task movie/date/location/mode were not altered.

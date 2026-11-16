@@ -13,6 +13,9 @@ import type { BrowserPort } from "./browser";
 
 export interface DiscoveryPort {
   search(input: TaskInput, signal: AbortSignal): Promise<Candidate[]>;
+  explainEmptyResult?(
+    input: TaskInput,
+  ): Promise<{ title: string; message: string } | undefined>;
 }
 const activeStatuses = [
   "queued",
@@ -176,6 +179,7 @@ export class BotRunner {
     task.lastCheckAt = new Date().toISOString();
     task.nextCheckAt = undefined;
     task.error = undefined;
+    task.waitReason = undefined;
     this.log(
       task,
       `Check ${task.checks}: searching ${task.input.movieName} on ${task.input.targetDate}.`,
@@ -203,15 +207,18 @@ export class BotRunner {
             task,
             "Demo results ready. Inspect seats in the dashboard; live browser actions are disabled.",
           );
-      } else if (task.input.mode === "monitor") {
-        task.status = "monitoring";
-        this.log(task, "No matching seats yet. Monitoring continues.");
       } else {
-        task.status = "awaiting_user";
+        task.waitReason = await this.discovery.explainEmptyResult?.(task.input);
+        controller.signal.throwIfAborted();
+        task.status =
+          task.input.mode === "monitor" ? "monitoring" : "awaiting_user";
         this.log(
           task,
-          "No seats match these choices. Adjust the date, rows or branches and try again.",
-          "warning",
+          task.waitReason?.message ||
+            (task.input.mode === "monitor"
+              ? "No matching seats yet. Monitoring continues."
+              : "No seats match these choices. Adjust the date, rows or branches and try again."),
+          task.input.mode === "monitor" ? "info" : "warning",
         );
       }
     } catch (error) {
@@ -344,6 +351,7 @@ export class BotRunner {
     task.status = "queued";
     task.error = undefined;
     task.results = [];
+    task.waitReason = undefined;
     task.nextCheckAt = undefined;
     this.log(task, "Search preferences updated. Checking again.");
     await this.persist();

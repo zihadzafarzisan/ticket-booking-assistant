@@ -155,7 +155,16 @@ export default function MovieBooking({
             </span>
             <div>
               <strong>
-                {movie.isUpcoming ? "Coming soon" : "Now showing"}
+                {!inventory.shows.some(
+                  (show) =>
+                    show.movie.id === movie.id &&
+                    show.ticketStatus !== "started" &&
+                    show.date >= today(),
+                )
+                  ? "No shows announced"
+                  : movie.isUpcoming
+                    ? "Coming soon"
+                    : "Now showing"}
               </strong>
               <p>
                 {movie.formats.join(" · ")}

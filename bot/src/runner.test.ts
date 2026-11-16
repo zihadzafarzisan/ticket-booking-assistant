@@ -72,6 +72,9 @@ async function setup(
   search = vi.fn(async (_input: TaskInput, _signal: AbortSignal) => [
     candidate(),
   ]),
+  explainEmptyResult?: (
+    input: TaskInput,
+  ) => Promise<{ title: string; message: string } | undefined>,
 ) {
   const root = resolve(".bot-test-data");
   await mkdir(root, { recursive: true });
@@ -91,7 +94,7 @@ async function setup(
     focus: vi.fn(async () => {}),
     close: vi.fn(async () => {}),
   };
-  const runner = new BotRunner(store, { search }, browser);
+  const runner = new BotRunner(store, { search, explainEmptyResult }, browser);
   runners.push(runner);
   await runner.init();
   return { runner, store, browser, search };
@@ -146,6 +149,33 @@ describe("task validation and browser boundaries", () => {
   });
 });
 describe("durable bot execution", () => {
+  it("persists a specific unavailable-show reason without opening the browser", async () => {
+    const reason = {
+      title: "Waiting for show announcements",
+      message:
+        "Cineplex has not published shows for this movie. There is no seat page to open yet.",
+    };
+    const { runner, store, browser } = await setup(
+      vi.fn(async () => []),
+      async () => reason,
+    );
+    const task = await runner.create(input({ mode: "instant" }));
+    await runner.check(task.id);
+    expect(runner.get(task.id)).toMatchObject({
+      status: "awaiting_user",
+      waitReason: reason,
+    });
+    expect(runner.get(task.id).logs[0].message).toBe(reason.message);
+    expect(browser.reserve).not.toHaveBeenCalled();
+    expect((await store.load())[0].waitReason).toEqual(reason);
+    await runner.update(task.id, input({ mode: "monitor" }));
+    await runner.check(task.id);
+    expect(runner.get(task.id)).toMatchObject({
+      status: "monitoring",
+      waitReason: reason,
+    });
+    expect(browser.reserve).not.toHaveBeenCalled();
+  });
   it("updates an idle mission in place and retries with the corrected search", async () => {
     const { runner, store, browser, search } = await setup();
     const task = await runner.create(

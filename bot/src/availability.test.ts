@@ -1,7 +1,11 @@
 import { expect, it } from "vitest";
 import { LiveInventoryService } from "./live-inventory";
 import { inventoryFixture } from "./testing/live-fixture";
-import { movieDateAvailability } from "./availability";
+import {
+  movieDateAvailability,
+  movieCatalogState,
+  explainMovieAvailability,
+} from "./availability";
 
 async function fixtureData() {
   const fixture = inventoryFixture("2099-12-01");
@@ -102,4 +106,59 @@ it("preserves explicit published openings and prevents early Selling shows from 
     inventory.snapshot().shows.find((show) => show.id === "show-later")
       ?.onlineSalesOpenAt,
   ).toBeUndefined();
+});
+
+it("does not promote a catalog now-showing flag into a published screening", async () => {
+  const { fixture, inventory } = await fixtureData();
+  const raw = {
+    ...fixture.movies[0],
+    id: "unlisted-movie",
+    title: { en: "Unannounced Film" },
+  };
+  Object.assign(raw, { localReleaseDate: "2099-12-18" });
+  fixture.movies.push(raw);
+  await inventory.refresh();
+  const data = inventory.snapshot();
+  const movie = data.movies.find((item) => item.id === "unlisted-movie")!;
+  expect(movie.isNowShowing).toBe(true);
+  expect(movieCatalogState(movie, data.shows, "2099-11-30")).toBe("upcoming");
+  expect(data.counts.nowShowingMovies).toBe(1);
+  expect(
+    explainMovieAvailability(data.movies, data.shows, data.branches, {
+      targetMovieId: movie.id,
+      movieName: movie.title,
+      targetDate: "2099-12-01",
+      requiredSeats: 2,
+      locationIds: ["bashundhara"],
+      preferredTimes: [],
+    }),
+  ).toMatchObject({
+    title: "Waiting for show announcements",
+    message: expect.stringContaining("There is no seat page to open yet"),
+  });
+});
+it("explains date, location and time blockers separately", async () => {
+  const { data } = await fixtureData();
+  const input = {
+    targetMovieId: "movie-running",
+    movieName: "Running Film",
+    targetDate: "2099-12-01",
+    requiredSeats: 2,
+    locationIds: [] as string[],
+    preferredTimes: [] as import("./contracts").TaskInput["preferredTimes"],
+  };
+  const explain = (patch: Partial<typeof input>) =>
+    explainMovieAvailability(data.movies, data.shows, data.branches, {
+      ...input,
+      ...patch,
+    });
+  expect(explain({ targetDate: "2099-12-03" }).title).toBe(
+    "Selected date is not published",
+  );
+  expect(explain({ locationIds: ["missing-branch"] }).title).toBe(
+    "No shows at the selected locations",
+  );
+  expect(explain({ preferredTimes: ["morning"] }).title).toBe(
+    "Showtime preferences exclude every show",
+  );
 });

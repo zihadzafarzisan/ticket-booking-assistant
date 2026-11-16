@@ -5,7 +5,13 @@ import {
   type TimeSlot,
 } from "../../packages/core/src";
 import type { TaskInput } from "../../bot/src/contracts";
-import type { LiveMovie, LiveBranch, LiveShow } from "../../bot/src/live-types";
+import type {
+  LiveMovie,
+  LiveBranch,
+  LiveShow,
+  LiveInventory,
+} from "../../bot/src/live-types";
+import { explainMovieAvailability } from "../../bot/src/availability";
 import { Icon } from "./icons";
 export const today = () =>
   new Date(Date.now() + 6 * 3600_000).toISOString().slice(0, 10);
@@ -18,6 +24,7 @@ export default function TaskForm({
   branches,
   editing = false,
   pinnedShow,
+  inventory,
 }: {
   onClose: () => void;
   onCreate: (input: TaskInput) => Promise<void>;
@@ -27,6 +34,7 @@ export default function TaskForm({
   branches?: LiveBranch[];
   editing?: boolean;
   pinnedShow?: LiveShow;
+  inventory?: LiveInventory;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [form, setForm] = useState<TaskInput>({
@@ -64,6 +72,17 @@ export default function TaskForm({
   });
   const [advanced, setAdvanced] = useState(false);
   const [error, setError] = useState("");
+  const availability =
+    form.source === "live" &&
+    inventory?.status === "live" &&
+    form.movieName.trim()
+      ? explainMovieAvailability(
+          inventory.movies,
+          inventory.shows,
+          inventory.branches,
+          form,
+        )
+      : undefined;
   useEffect(() => {
     dialog.current?.showModal();
   }, []);
@@ -231,6 +250,30 @@ export default function TaskForm({
               />
             </label>
           </div>
+          {availability && (
+            <section
+              className="booking-availability"
+              role="note"
+              aria-label="Current search availability"
+            >
+              <h3>{availability.title}</h3>
+              <p>
+                {availability.title === "Tickets available"
+                  ? "Published shows have reported tickets. The browser verifies actual seat availability when the task runs."
+                  : availability.message}
+              </p>
+              {availability.title !== "Tickets available" &&
+                form.mode === "instant" && (
+                  <button
+                    type="button"
+                    className="button secondary compact"
+                    onClick={() => update("mode", "monitor")}
+                  >
+                    Watch for show announcements
+                  </button>
+                )}
+            </section>
+          )}
           <div className="field">
             <div className="label-row">
               <span>Cinema branches</span>

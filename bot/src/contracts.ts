@@ -64,6 +64,7 @@ export interface BotTask {
   lastCheckAt?: string;
   nextCheckAt?: string;
   error?: string;
+  waitReason?: { title: string; message: string };
   results: Candidate[];
   logs: Activity[];
 }
