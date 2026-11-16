@@ -69,6 +69,13 @@ export interface BrowserStatus {
   connected: boolean;
   pages: number;
   headless: boolean;
+  mode?: "regular" | "persistent";
+}
+export interface CredentialStatus {
+  configured: boolean;
+  email: string;
+  remembered: boolean;
+  canRemember: boolean;
 }
 export interface Snapshot {
   tasks: BotTask[];

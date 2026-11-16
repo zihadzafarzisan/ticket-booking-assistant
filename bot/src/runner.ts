@@ -331,6 +331,25 @@ export class BotRunner {
     this.schedule(task, 50);
     return task;
   }
+  async update(id: string, value: unknown) {
+    const input = validateTask(value);
+    const task = this.get(id);
+    if (this.controllers.has(id))
+      throw new Error(
+        "Stop the running operation and wait for it to finish before adjusting the search.",
+      );
+    clearTimeout(this.timers.get(id));
+    this.timers.delete(id);
+    task.input = input;
+    task.status = "queued";
+    task.error = undefined;
+    task.results = [];
+    task.nextCheckAt = undefined;
+    this.log(task, "Search preferences updated. Checking again.");
+    await this.persist();
+    this.schedule(task, 50);
+    return structuredClone(task);
+  }
   async complete(id: string) {
     const task = this.get(id);
     if (!["awaiting_user", "awaiting_payment"].includes(task.status))

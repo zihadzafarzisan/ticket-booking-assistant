@@ -5,7 +5,7 @@ import {
   type TimeSlot,
 } from "../../packages/core/src";
 import type { TaskInput } from "../../bot/src/contracts";
-import type { LiveMovie, LiveBranch } from "../../bot/src/live-types";
+import type { LiveMovie, LiveBranch, LiveShow } from "../../bot/src/live-types";
 import { Icon } from "./icons";
 export const today = () =>
   new Date(Date.now() + 6 * 3600_000).toISOString().slice(0, 10);
@@ -16,6 +16,8 @@ export default function TaskForm({
   initial,
   movies,
   branches,
+  editing = false,
+  pinnedShow,
 }: {
   onClose: () => void;
   onCreate: (input: TaskInput) => Promise<void>;
@@ -23,6 +25,8 @@ export default function TaskForm({
   initial?: Partial<TaskInput>;
   movies?: LiveMovie[];
   branches?: LiveBranch[];
+  editing?: boolean;
+  pinnedShow?: LiveShow;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [form, setForm] = useState<TaskInput>({
@@ -52,7 +56,12 @@ export default function TaskForm({
         .filter((branch) => branch.active)
         .map((branch) => ({ id: branch.locationId, shortName: branch.name }))
     : STAR_CINEPLEX_LOCATIONS;
-  const [schedule, setSchedule] = useState("");
+  const [schedule, setSchedule] = useState(() => {
+    if (!initial?.scheduledAt) return "";
+    const date = new Date(initial.scheduledAt);
+    date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
+    return date.toISOString().slice(0, 16);
+  });
   const [advanced, setAdvanced] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => {
@@ -62,7 +71,14 @@ export default function TaskForm({
     setForm((prev) => ({
       ...prev,
       [key]: value,
-      ...(["movieName", "targetDate", "source"].includes(key)
+      ...([
+        "movieName",
+        "targetDate",
+        "source",
+        "locationIds",
+        "preferredTimes",
+        "strategy",
+      ].includes(key)
         ? { targetShowId: undefined }
         : {}),
     }));
@@ -75,6 +91,9 @@ export default function TaskForm({
       [key]: prev[key].includes(value as never)
         ? prev[key].filter((v) => v !== value)
         : [...prev[key], value],
+      ...(key === "locationIds" || key === "preferredTimes"
+        ? { targetShowId: undefined }
+        : {}),
     }));
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -82,7 +101,10 @@ export default function TaskForm({
     try {
       await onCreate({
         ...form,
-        scheduledAt: schedule ? new Date(schedule).toISOString() : undefined,
+        scheduledAt:
+          form.mode === "monitor" && schedule
+            ? new Date(schedule).toISOString()
+            : undefined,
       });
     } catch (error) {
       setError((error as Error).message);
@@ -100,8 +122,12 @@ export default function TaskForm({
       <form onSubmit={submit}>
         <header className="dialog-head">
           <div>
-            <span className="eyebrow">A NEW MISSION</span>
-            <h2>Let’s get you seated.</h2>
+            <span className="eyebrow">
+              {editing ? "ADJUST MISSION" : "A NEW MISSION"}
+            </span>
+            <h2>
+              {editing ? "Update your seat search." : "Let’s get you seated."}
+            </h2>
             <p>Set your preferences. Your bot takes it from here.</p>
           </div>
           <button
@@ -117,8 +143,24 @@ export default function TaskForm({
           {form.targetShowId && (
             <div className="pinned-show">
               <Icon name="pin" size={15} />
-              Pinned to your selected show. Change the movie or date to search
-              other shows.
+              <span>
+                Pinned to your selected show.
+                {pinnedShow && (
+                  <strong>
+                    {pinnedShow.date} · {pinnedShow.time} ·{" "}
+                    {pinnedShow.cinema.name} · {pinnedShow.hall.name}
+                  </strong>
+                )}{" "}
+                Changing branch or time preferences searches matching shows
+                instead.
+              </span>
+              <button
+                type="button"
+                className="button secondary compact"
+                onClick={() => update("targetShowId", undefined)}
+              >
+                Unpin show
+              </button>
             </div>
           )}
           <div className="mode-picker">
@@ -433,10 +475,16 @@ export default function TaskForm({
           </span>
           <button className="button primary" disabled={busy}>
             {busy
-              ? "Creating…"
-              : form.mode === "instant"
-                ? "Find my seats"
-                : "Start monitoring"}
+              ? editing
+                ? "Saving…"
+                : "Creating…"
+              : editing
+                ? form.mode === "instant"
+                  ? "Save & find seats"
+                  : "Save & monitor"
+                : form.mode === "instant"
+                  ? "Find my seats"
+                  : "Start monitoring"}
             <Icon name="arrow" size={17} />
           </button>
         </footer>

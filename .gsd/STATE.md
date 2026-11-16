@@ -2,6 +2,14 @@
 
 Updated: 2026-11-16
 
+## Browser and Cineplex login update
+
+- Implemented regular default-context CDP attachment to existing local Chrome/Edge, normal persistent-browser setup when needed, cinema-tab/session reuse and disconnect without closing attached browser tabs. Ordinary browsers need debugging access enabled; setup and limitations are explained in Settings and README.
+- Added Cineplex email/password Settings, session-only storage and optional Windows DPAPI persistence. Passwords are not returned by settings/state APIs or included in tasks/events/logs. Saved login can be replaced or removed.
+- Login handling covers recognized allowed-origin forms before seats and at checkout, one submission per handoff, rejected credentials, external form refusal and manual OTP/CAPTCHA/payment handoff. Public Cineplex sign-in endpoint and form field/button names were inspected read-only.
+- Verification: production build, 82 unit/API tests, 19 browser tests and five fixture smoke checks passed. Browser tests launch/connect an actual regular test browser, confirm shared cookies/default context, reuse tabs and leave tabs open on disconnect. Settings screenshots were inspected on desktop and mobile. Windows DPAPI round trip passed. Real credentials/reservations/payments were not used.
+- User requested commit/push after completion; include earlier authorized seat-selection recovery and smoke test work with this delivery.
+
 Standalone bot/dashboard migration implemented and verified locally.
 
 ## Delivered
@@ -14,6 +22,15 @@ Standalone bot/dashboard migration implemented and verified locally.
 - Default standalone build/start/development scripts, Windows launcher, separate deterministic/live test configurations and operator documentation.
 
 ## Evidence
+
+- Seat-selection failure diagnosed from saved user tasks: a pinned Military Museum show conflicted with Bashundhara, and a pinned 11:45 show conflicted with afternoon. Removing the pins in a read-only search returned five viable options for each.
+- Fixed scope edits retaining stale show pins, added Adjust search / Unpin show with in-place task updates and explicit backend conflict messages. Fixed browser handling of reversed numbering, opaque provider IDs, delayed requested rows and aria-pressed/data-seat-state selection markers.
+- Current verification: production build passed; 76 unit/API tests and 11 browser tests passed. Both the stale-pin and reversed-numbering regressions failed before the fixes. User jobs/profile were preserved and no real seats were reserved. Details: `.gsd/DEBUG.md`.
+
+- `npm.cmd run test:smoke`: production build and five smoke checks passed using deterministic inventory.
+- `npm.cmd run test:smoke:live -- --skip-build`: five smoke checks passed against the real public API; 43 movies, 294 published shows and 26 halls observed. Health/config/state, dashboard, inventory refresh and isolated demo lifecycle all passed.
+- Smoke failure path verified under blocked network access: exit code 1 and a fresh `status: failed` report; subsequent network-enabled rerun passed. No stale success report or fixture fallback was used.
+- Smoke artifacts: `test-results/smoke/summary.json`, `dashboard.png`, `live-inventory.png`. Owned smoke services shut down; user storage and cinema login were not used.
 
 - `npm.cmd run build`: passed, bot and dashboard bundles emitted; strict typechecks passed.
 - `npm.cmd test`: 74 tests passed across seven suites, including inventory normalization, stale/error handling, zero-seat states, cutoff transitions, hall metadata, live API/SSE and exact-show targeting.

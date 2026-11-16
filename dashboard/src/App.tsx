@@ -12,6 +12,7 @@ import { api, subscribe } from "./api";
 import TaskForm from "./TaskForm";
 import SeatInspector from "./SeatInspector";
 import LiveCineplex from "./LiveCineplex";
+import { CinemaSettings } from "./CinemaSettings";
 import type { LiveInventory } from "../../bot/src/live-types";
 
 const statusLabels: Record<TaskStatus, string> = {
@@ -139,6 +140,7 @@ export default function App() {
   const [showForm, setShowForm] = useState(false);
   const [inventory, setInventory] = useState<LiveInventory>();
   const [missionSeed, setMissionSeed] = useState<Partial<TaskInput>>();
+  const [editingTaskId, setEditingTaskId] = useState<string>();
   const [inspecting, setInspecting] = useState<Candidate>();
   const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState("");
@@ -289,9 +291,13 @@ export default function App() {
   const createTask = async (input: TaskInput) => {
     setCreating(true);
     try {
-      const task = await api<BotTask>("/tasks", input);
+      const task = await api<BotTask>(
+        editingTaskId ? `/tasks/${editingTaskId}/update` : "/tasks",
+        input,
+      );
       setShowForm(false);
       setMissionSeed(undefined);
+      setEditingTaskId(undefined);
       setSelectedId(task.id);
       setPage("detail");
       setSnapshot(await api<Snapshot>("/state"));
@@ -309,7 +315,7 @@ export default function App() {
     void action(
       "/browser/open",
       {},
-      "Cinema browser opened. Sign in there to keep your session ready.",
+      "Cinema tab opened in your regular browser.",
     );
   const TaskRow = ({ task }: { task: BotTask }) => (
     <button
@@ -824,6 +830,20 @@ export default function App() {
                   </div>
                 </div>
                 <div className="mission-actions">
+                  {!running.includes(selected.status) && (
+                    <button
+                      className="button secondary"
+                      disabled={!!busy}
+                      onClick={() => {
+                        setEditingTaskId(selected.id);
+                        setMissionSeed(selected.input);
+                        setShowForm(true);
+                      }}
+                    >
+                      <Icon name="settings" size={15} />
+                      Adjust search
+                    </button>
+                  )}
                   {running.includes(selected.status) ? (
                     <>
                       <button
@@ -1167,48 +1187,12 @@ export default function App() {
           )}
           {page === "settings" && (
             <div className="settings-grid">
-              <section className="panel settings-card">
-                <div className="settings-title">
-                  <span className="settings-symbol">
-                    <Icon name="browser" size={23} />
-                  </span>
-                  <div>
-                    <h2>Cinema browser</h2>
-                    <p>Your login and checkout, in one place.</p>
-                  </div>
-                </div>
-                <div className="setting-line">
-                  <div>
-                    <strong>Browser session</strong>
-                    <p>
-                      {snapshot.browser.connected
-                        ? `Connected · ${snapshot.browser.pages} open tab${snapshot.browser.pages === 1 ? "" : "s"}`
-                        : "Ready to open a dedicated cinema window."}
-                    </p>
-                  </div>
-                  <span
-                    className={`connection-pill ${snapshot.browser.connected ? "connected" : ""}`}
-                  >
-                    {snapshot.browser.connected ? "Connected" : "Not open"}
-                  </span>
-                </div>
-                <p className="settings-copy">
-                  Sign in once in the bot browser. Your session stays on this
-                  computer and is reused for future bookings. Complete payment
-                  there when your seats are ready.
-                </p>
-                <button
-                  className="button primary"
-                  disabled={!!busy}
-                  onClick={openBrowser}
-                >
-                  <Icon name="browser" size={17} />
-                  {busy === "/browser/open"
-                    ? "Opening…"
-                    : "Open cinema browser"}
-                  <Icon name="external" size={14} />
-                </button>
-              </section>
+              <CinemaSettings
+                browser={snapshot.browser}
+                onChanged={async () =>
+                  setSnapshot(await api<Snapshot>("/state"))
+                }
+              />
               <section className="panel settings-card">
                 <div className="settings-title">
                   <span className="settings-symbol amber">
@@ -1314,11 +1298,16 @@ export default function App() {
         <TaskForm
           busy={creating}
           initial={missionSeed}
+          editing={!!editingTaskId}
+          pinnedShow={inventory?.shows.find(
+            (show) => show.id === missionSeed?.targetShowId,
+          )}
           movies={inventory?.movies}
           branches={inventory?.branches}
           onClose={() => {
             setShowForm(false);
             setMissionSeed(undefined);
+            setEditingTaskId(undefined);
           }}
           onCreate={createTask}
         />

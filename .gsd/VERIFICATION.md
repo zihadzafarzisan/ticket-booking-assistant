@@ -1,5 +1,9 @@
 # Standalone migration verification
 
+Seat-selection repair: saved live tasks reproduced zero results because pinned show IDs conflicted with branch/time filters. Read-only unpinned searches returned five options each. New regression tests reproduced stale-pin submission and reversed-numbering selection failures before repair. Branch/time edits now clear pins, existing tasks can be adjusted in place, and the browser understands provider selection attributes, opaque IDs and delayed rows. Current build, 76 unit/API tests and 11 browser tests pass. `test-results/adjusted-mission.png` was visually reviewed. No real reservation was made during verification.
+
+Smoke test added: `npm.cmd run test:smoke` builds and checks the production app with deterministic inventory. `npm.cmd run test:smoke:live` runs the same checks against the real provider. Both passed; the live run observed 43 movies, 294 published shows and 26 halls. Five checks cover startup/APIs, inventory, dashboard rendering, refresh delivery and isolated demo-task cleanup. A blocked-network run correctly failed and replaced the prior report with failed status; the subsequent authorized-network rerun passed. Results and screenshots are under `test-results/smoke/`.
+
 Updated: 2026-11-16
 
 | Requirement | Evidence |
@@ -18,3 +22,11 @@ Checks: standalone production build passed; 74 deterministic tests passed; seven
 Actual read-only provider/API verification returned 43 catalog movies, nine branches, 294 published shows and 26 named halls at `2026-11-15T19:38:30Z`. Tests also cover sold-out zero counts, cutoff/channel handling, stale-data failure/recovery, newly opened sales, public hall-name fallbacks and exact-show targeting. The connected live-inventory UI passes desktop/mobile filtering, hall views and targeted task submission. Counts are observations and will change.
 
 The in-app browser preview host was unavailable. Visual QA used screenshots from the repository's Playwright tests instead. Authenticated cinema checkout remains an integration check requiring the user's real browser session.
+# Browser and login verification — 2026-11-16
+
+- `npm.cmd run build`: passed.
+- `npm.cmd test`: 82 tests passed across 8 suites, including credential API authorization/redaction, endpoint validation, active-search protection, browser routes and real Windows DPAPI storage round trip.
+- `npm.cmd run test:e2e`: 19 tests passed, including actual regular-context CDP attachment, browser launch/reuse, shared session cookies, disconnect preserving tabs, login before seats/at checkout, missing/rejected credentials, external form refusal and OTP handoff.
+- `npm.cmd run test:smoke -- --skip-build`: five production fixture checks passed. No live reservation or payment was made.
+- Inspected `test-results/cineplex-settings.png` and `test-results/cineplex-settings-mobile.png`: forms are readable, no horizontal overflow, saved passwords are not displayed.
+- Inspected the public Cineplex sign-in redirect and rendered form read-only: `/api/auth/sign-in` leads to `/login`, with email/password fields and a Sign in button. Actual account login remains dependent on the user's credentials and provider availability.

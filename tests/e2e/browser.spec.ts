@@ -1,6 +1,73 @@
 import { test, expect } from "@playwright/test";
 import { BrowserDriver } from "../../bot/src/browser";
 import { validateTask } from "../../bot/src/contracts";
+
+test("handles reversed numbering with opaque provider seat IDs", async ({
+  page,
+  context,
+}) => {
+  const body = `<!doctype html><html><body><div style="display:flex;gap:5px">${[5, 4, 3, 2, 1].map((n) => `<button role="gridcell" data-seat-id="uuid-${n}" data-category="premium" data-status="available" data-seat-state="available" aria-label="Row B seat B0${n}, available, premium" aria-selected="false" style="width:30px;height:34px" onclick="this.setAttribute('aria-selected','true');this.setAttribute('data-seat-state','selected');document.querySelector('#proceed').disabled=document.querySelectorAll('[aria-selected=true]').length!==2;">${n}</button>`).join("")}</div><button id="proceed" disabled onclick="location.href='/checkout'">Continue</button></body></html>`;
+  await context.route("https://kichole.com/**", (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: route.request().url().includes("/checkout")
+        ? "<h1>Payment fixture</h1>"
+        : body,
+    }),
+  );
+  await page.goto(show.bookingUrl);
+  const driver = new BrowserDriver(".bot-test-data/unused-profile", true);
+  Object.assign(driver, {
+    context,
+    pages: new Map([["fixture-task:fixture", page]]),
+  });
+  const result = await driver.reserve(
+    "fixture-task",
+    show,
+    input(),
+    new AbortController().signal,
+  );
+  expect(result.status).toBe("awaiting_payment");
+  expect(result.selectedSeats).toHaveLength(2);
+  expect(
+    Math.abs(
+      Number(result.selectedSeats[0].slice(1)) -
+        Number(result.selectedSeats[1].slice(1)),
+    ),
+  ).toBe(1);
+});
+
+test("waits for requested rows to hydrate and verifies aria-pressed selection", async ({
+  page,
+  context,
+}) => {
+  const body = `<!doctype html><html><body><div style="display:flex;gap:5px">${[1, 2].map((n) => `<button data-seat-id="L${n}" style="width:30px;height:34px">L${n}</button>`).join("")}</div><button id="proceed" disabled onclick="location.href='/checkout'">Continue</button><script>setTimeout(()=>{const row=document.createElement('div');row.style.cssText='display:flex;gap:5px';for(let n=1;n<=4;n++){const seat=document.createElement('button');seat.setAttribute('data-seat-id','uuid-b-'+n);seat.setAttribute('aria-label','Row B seat B0'+n+', available');seat.setAttribute('aria-pressed','false');seat.style.cssText='width:30px;height:34px';seat.textContent=String(n);seat.onclick=()=>{seat.setAttribute('aria-pressed',seat.getAttribute('aria-pressed')==='true'?'false':'true');document.querySelector('#proceed').disabled=document.querySelectorAll('[aria-pressed=true]').length!==2;};row.appendChild(seat);}document.body.appendChild(row);},350);</script></body></html>`;
+  await context.route("https://kichole.com/**", (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: route.request().url().includes("/checkout")
+        ? "<h1>Payment fixture</h1>"
+        : body,
+    }),
+  );
+  await page.goto(show.bookingUrl);
+  const driver = new BrowserDriver(".bot-test-data/unused-profile", true);
+  Object.assign(driver, {
+    context,
+    pages: new Map([["fixture-task:fixture", page]]),
+  });
+  const result = await driver.reserve(
+    "fixture-task",
+    show,
+    input(),
+    new AbortController().signal,
+  );
+  expect(result.status).toBe("awaiting_payment");
+  expect(result.selectedSeats).toHaveLength(2);
+  expect(result.selectedSeats.every((label) => label.startsWith("B"))).toBe(
+    true,
+  );
+});
 import type { Showtime } from "../../packages/core/src";
 
 const show: Showtime = {

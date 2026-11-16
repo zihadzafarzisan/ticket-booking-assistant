@@ -1484,6 +1484,75 @@ h1 {
   grid-template-columns: 1fr 1fr;
   gap: 20px;
 }
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 20px 0;
+}
+.settings-form > label {
+  font-size: 12px;
+  font-weight: 600;
+}
+.settings-form > input {
+  width: 100%;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+.settings-form > input:focus {
+  outline: 2px solid var(--lime);
+  outline-offset: 1px;
+}
+.settings-form .remember-login {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  line-height: 1.6;
+  font-size: 11px;
+}
+.remember-login input {
+  flex: 0 0 auto;
+}
+.settings-form .settings-copy {
+  margin: 3px 0;
+}
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.browser-help {
+  margin-top: 20px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.browser-help summary {
+  cursor: pointer;
+  color: var(--text);
+  font-weight: 600;
+}
+.browser-help a {
+  color: var(--lime);
+}
+.settings-notice {
+  grid-column: 1 / -1;
+  padding: 14px 18px;
+  background: #273a2c;
+  border-radius: 10px;
+  color: #c3e9c9;
+  font-size: 13px;
+}
+.settings-notice.error {
+  background: #3d2927;
+  color: #edb2a7;
+}
 .settings-card {
   padding: 26px;
 }
@@ -3363,6 +3432,34 @@ h1 {
   font-size: 10px;
   line-height: 1.8;
   margin-bottom: 18px;
+}
+.pinned-show > span {
+  flex: 1;
+  min-width: 0;
+}
+.pinned-show strong {
+  display: block;
+  font-size: 10px;
+  line-height: 1.8;
+  margin: 5px 0;
+  color: #e1edcb;
+}
+.pinned-show > .button {
+  flex-shrink: 0;
+}
+@media (max-width: 480px) {
+  .pinned-show {
+    flex-wrap: wrap;
+  }
+  .pinned-show > span {
+    flex-basis: calc(100% - 24px);
+  }
+  .pinned-show > .button {
+    margin-left: 23px;
+  }
+  .mission-actions {
+    flex-wrap: wrap;
+  }
 }
 .live-overview-strip {
   display: flex;

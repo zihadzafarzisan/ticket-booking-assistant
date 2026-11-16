@@ -7,6 +7,8 @@ import { BrowserDriver } from "./browser";
 import { createBotServer, type ServerOptions } from "./server";
 import { LiveInventoryService } from "./live-inventory";
 import { LiveStarCineplexAdapter } from "./live-adapter";
+import { BrowserConnection } from "./browser-connection";
+import { CredentialStore } from "./credentials";
 
 export async function startBot(
   options: ServerOptions & { port?: number; dataDirectory?: string } = {},
@@ -21,12 +23,20 @@ export async function startBot(
       resolve(root, ".bot-data"),
   );
   const inventory = options.inventory || new LiveInventoryService();
+  const credentials =
+    options.credentials ||
+    new CredentialStore(resolve(data, "credentials.json"));
+  const browserConnection =
+    options.browserConnection || new BrowserConnection(data);
+  await credentials.init();
+  await browserConnection.init();
   const runner = new BotRunner(
     new TaskStore(resolve(data, "tasks.json")),
     new DiscoveryService(new LiveStarCineplexAdapter(inventory)),
     new BrowserDriver(
       resolve(data, "browser-profile"),
       process.env.BOT_HEADLESS === "1",
+      { connection: browserConnection, credentials },
     ),
   );
   await runner.init();
@@ -34,6 +44,8 @@ export async function startBot(
     staticDirectory: resolve(root, "dashboard/dist"),
     ...options,
     inventory,
+    credentials,
+    browserConnection,
   });
   try {
     await new Promise<void>((done, reject) => {

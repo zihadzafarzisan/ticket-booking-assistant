@@ -24,11 +24,35 @@ describe("standalone discovery", () => {
     expect(
       results.every((result) => result.showtime.id === "demo-show-1"),
     ).toBe(true);
-    const missing = await new DiscoveryService().search(
-      { ...config, targetShowId: "not-published" },
-      new AbortController().signal,
+    await expect(
+      new DiscoveryService().search(
+        { ...config, targetShowId: "not-published" },
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow("selected show");
+  });
+  it("explains a selected show conflicting with branch or time filters", async () => {
+    const discovery = new DiscoveryService(
+      new DemoAdapter(),
+      new DemoAdapter(),
     );
-    expect(missing).toEqual([]);
+    await expect(
+      discovery.search(
+        {
+          ...input(),
+          targetShowId: "demo-show-0",
+          locationIds: ["sony-square"],
+          preferredTimes: [],
+        },
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow("branch filter excludes");
+    await expect(
+      discovery.search(
+        { ...input(), targetShowId: "demo-show-0" },
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow("time filter excludes");
   });
   it("never merges explicitly disconnected seats into a together candidate", () => {
     const seats = [1, 2].map((number) => ({

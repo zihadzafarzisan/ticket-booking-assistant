@@ -146,6 +146,25 @@ describe("task validation and browser boundaries", () => {
   });
 });
 describe("durable bot execution", () => {
+  it("updates an idle mission in place and retries with the corrected search", async () => {
+    const { runner, store, browser, search } = await setup();
+    const task = await runner.create(
+      input({ autoReserve: false, targetShowId: "old-show" }),
+    );
+    await runner.check(task.id);
+    const updated = await runner.update(
+      task.id,
+      input({ movieName: "Corrected movie", autoReserve: false }),
+    );
+    expect(updated.id).toBe(task.id);
+    expect(updated.results).toEqual([]);
+    expect(updated.input.targetShowId).toBeUndefined();
+    await runner.check(task.id);
+    expect(search).toHaveBeenCalledTimes(2);
+    expect(runner.snapshot().tasks).toHaveLength(1);
+    expect((await store.load())[0].input.movieName).toBe("Corrected movie");
+    expect(browser.reserve).not.toHaveBeenCalled();
+  });
   it("hands verified live results to the browser and persists the outcome", async () => {
     const { runner, store, browser } = await setup();
     const task = await runner.create(input());

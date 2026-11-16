@@ -4,10 +4,13 @@ import { eligibleBlocks } from "./discovery";
 import { selectOptimalSeats } from "../../packages/core/src";
 import type { Seat, Showtime } from "../../packages/core/src";
 import type { BrowserStatus, Handoff, TaskInput } from "./contracts";
+import type { BrowserConnection } from "./browser-connection";
+import type { CredentialStore } from "./credentials";
+import { handleCinemaLogin, isCinemaUrl } from "./cinema-login";
 
 export interface BrowserPort {
   status(): BrowserStatus;
-  openSession(): Promise<void>;
+  openSession(connectOnly?: boolean): Promise<void>;
   reserve(
     taskId: string,
     showtime: Showtime,
@@ -47,23 +50,32 @@ export class BrowserDriver implements BrowserPort {
   constructor(
     private profilePath: string,
     private headless = false,
+    private options: {
+      connection?: BrowserConnection;
+      credentials?: CredentialStore;
+    } = {},
   ) {}
   status(): BrowserStatus {
     return {
       connected: !!this.context,
       pages: this.context?.pages().length || 0,
       headless: this.headless,
+      mode: this.options.connection ? "regular" : "persistent",
     };
   }
-  private async ensureContext(): Promise<BrowserContext> {
+  private async ensureContext(connectOnly = false): Promise<BrowserContext> {
     if (this.context) return this.context;
     if (this.launching) return this.launching;
     this.launching = (async () => {
       await mkdir(this.profilePath, { recursive: true });
-      const context = await chromium.launchPersistentContext(this.profilePath, {
-        headless: this.headless,
-        viewport: null,
-      });
+      const context = this.options.connection
+        ? await (connectOnly
+            ? this.options.connection.connect()
+            : this.options.connection.openRegular())
+        : await chromium.launchPersistentContext(this.profilePath, {
+            headless: this.headless,
+            viewport: null,
+          });
       this.context = context;
       context.on("close", () => {
         if (this.context === context) {
@@ -79,9 +91,9 @@ export class BrowserDriver implements BrowserPort {
       this.launching = undefined;
     }
   }
-  async openSession() {
-    const context = await this.ensureContext();
-    let page = context.pages().find((p) => p.url().includes("kichole.com"));
+  async openSession(connectOnly = false) {
+    const context = await this.ensureContext(connectOnly);
+    let page = context.pages().find((p) => isCinemaUrl(p.url()));
     if (!page) {
       page = await context.newPage();
       await page.goto("https://kichole.com/?tenant=star-cineplex", {
@@ -149,14 +161,18 @@ export class BrowserDriver implements BrowserPort {
       selectedSeats,
     });
     const body = await page.locator("body").innerText();
-    if (
-      /captcha|verify you are human|sign in to continue|log in to continue|contact counter|online sales.*closed/i.test(
-        body,
-      )
-    )
+    if (/verify you are human|contact counter|online sales.*closed/i.test(body))
       return userHandoff(
         "The cinema needs your attention. Complete login or the on-screen step, then retry selection here.",
       );
+    const loginAttempt = { submitted: false };
+    const loginMessage = await handleCinemaLogin(
+      page,
+      this.options.credentials?.get(),
+      loginAttempt,
+      signal,
+    );
+    if (loginMessage) return userHandoff(loginMessage);
     try {
       await page.waitForSelector(
         '[data-seat-id], [data-seat-label], [role="gridcell"], button[aria-label*="seat" i]',
@@ -169,7 +185,17 @@ export class BrowserDriver implements BrowserPort {
       );
     }
     signal.throwIfAborted();
-    const liveSeats = await page.evaluate(readLiveSeats);
+    let liveSeats = await page.evaluate(readLiveSeats);
+    const rowsReady = () =>
+      liveSeats.length > 0 &&
+      (!input.allowedRows.length ||
+        liveSeats.some((seat) => input.allowedRows.includes(seat.row)));
+    const hydrationDeadline = Date.now() + 5000;
+    while (!rowsReady() && Date.now() < hydrationDeadline) {
+      signal.throwIfAborted();
+      await new Promise((done) => setTimeout(done, 100));
+      liveSeats = await page.evaluate(readLiveSeats);
+    }
     signal.throwIfAborted();
     const rows = new Map<string, Seat[]>();
     // Separate physical arms before using the shared block detector.
@@ -192,7 +218,7 @@ export class BrowserDriver implements BrowserPort {
         if (
           previous &&
           (seat.x - previous.x > typical * 2.1 ||
-            seat.number !== previous.number + 1)
+            Math.abs(seat.number - previous.number) !== 1)
         )
           arm++;
         const group = `${row}:${arm}`;
@@ -255,6 +281,8 @@ export class BrowserDriver implements BrowserPort {
                 !!el &&
                 (el.getAttribute("aria-selected") === "true" ||
                   el.getAttribute("aria-checked") === "true" ||
+                  el.getAttribute("aria-pressed") === "true" ||
+                  el.getAttribute("data-seat-state") === "selected" ||
                   el.getAttribute("data-selected") === "true" ||
                   el.classList.contains("selected") ||
                   el.classList.contains("is-selected"))
@@ -295,16 +323,61 @@ export class BrowserDriver implements BrowserPort {
     if ((await checkout.count()) && (await checkout.isEnabled())) {
       signal.throwIfAborted();
       await checkout.click({ timeout: 5000 });
+      // Login can appear as a dialog or a redirect only after seats are selected.
+      await page.waitForLoadState("domcontentloaded").catch(() => {});
+      await Promise.race([
+        page
+          .waitForURL(/\/(checkout|payment|login|signin)(\/|\?|$)/, {
+            timeout: 2000,
+          })
+          .catch(() => {}),
+        page
+          .locator('input[type="password"]')
+          .first()
+          .waitFor({ state: "visible", timeout: 2000 })
+          .catch(() => {}),
+      ]);
+      const checkoutLogin = await handleCinemaLogin(
+        page,
+        this.options.credentials?.get(),
+        loginAttempt,
+        signal,
+      );
+      if (checkoutLogin) return userHandoff(checkoutLogin, labels);
+      if (
+        loginAttempt.submitted &&
+        !/\/(checkout|payment)(\/|\?|$)/.test(new URL(page.url()).pathname)
+      ) {
+        const stillSelected = (await page.evaluate(readLiveSeats)).filter(
+          (seat) => seat.selected,
+        );
+        if (
+          stillSelected.length === input.requiredSeats &&
+          stillSelected.every((seat) => desiredLabels.has(seat.label)) &&
+          (await checkout.isVisible()) &&
+          (await checkout.isEnabled())
+        ) {
+          signal.throwIfAborted();
+          await checkout.click({ timeout: 5000 });
+        }
+      }
       await page
         .waitForURL(/\/(checkout|payment)(\/|\?|$)/, { timeout: 10_000 })
         .catch(() => {});
     }
     signal.throwIfAborted();
+    const finalLogin = await handleCinemaLogin(
+      page,
+      this.options.credentials?.get(),
+      loginAttempt,
+      signal,
+    );
+    if (finalLogin) return userHandoff(finalLogin, labels);
     if (/\/(checkout|payment)(\/|\?|$)/.test(new URL(page.url()).pathname))
       return {
         status: "awaiting_payment",
         message:
-          "Seat selection was verified and the checkout page is open. Complete payment in the bot browser.",
+          "Seat selection was verified and the checkout page is open. Complete payment in your browser.",
         url: page.url(),
         selectedSeats: labels,
       };
@@ -322,7 +395,8 @@ export class BrowserDriver implements BrowserPort {
       }
   }
   async close() {
-    await this.context?.close();
+    if (this.options.connection) await this.options.connection.disconnect();
+    else await this.context?.close();
     this.context = undefined;
     this.pages.clear();
   }
@@ -332,6 +406,8 @@ export function isSeatSelected(el: Element): boolean {
   return (
     el.getAttribute("aria-selected") === "true" ||
     el.getAttribute("aria-checked") === "true" ||
+    el.getAttribute("aria-pressed") === "true" ||
+    el.getAttribute("data-seat-state") === "selected" ||
     el.getAttribute("data-selected") === "true" ||
     el.classList.contains("selected") ||
     el.classList.contains("is-selected")
@@ -362,23 +438,24 @@ export function readLiveSeats() {
   for (const el of nodes) {
     const box = el.getBoundingClientRect();
     if (!box.width || !box.height) continue;
-    const data = (
-      el.getAttribute("data-seat-label") ||
-      el.getAttribute("data-seat-id") ||
-      ""
-    )
+    const data = (el.getAttribute("data-seat-label") || "")
+      .trim()
+      .toUpperCase();
+    const opaqueId = (el.getAttribute("data-seat-id") || "")
       .trim()
       .toUpperCase();
     const aria = (el.getAttribute("aria-label") || "").toUpperCase();
     const text = (el.textContent || "").trim().toUpperCase();
-    let match =
-      data.match(/^([A-Z]+)[ -]?0*(\d+)$/) ||
-      text.match(/^([A-Z]+)[ -]?0*(\d+)$/);
+    let match = data.match(/^([A-Z]+)[ -]?0*(\d+)$/);
     if (!match) {
       const row = aria.match(/ROW:?\s*([A-Z]+)/);
       const num = aria.match(/SEAT:?\s*(?:[A-Z]+)?0*(\d+)/);
       if (row && num) match = [aria, row[1], num[1]];
     }
+    if (!match)
+      match =
+        text.match(/^([A-Z]+)[ -]?0*(\d+)$/) ||
+        opaqueId.match(/^([A-Z]+)[ -]?0*(\d+)$/);
     if (!match) continue;
     const row = match[1];
     const number = Number(match[2]);
@@ -390,6 +467,8 @@ export function readLiveSeats() {
     const unavailable =
       el.hasAttribute("disabled") ||
       el.getAttribute("aria-disabled") === "true" ||
+      el.getAttribute("data-seat-disabled") === "true" ||
+      el.getAttribute("data-seat-readonly") === "true" ||
       /(^|\s)(occupied|booked|sold|unavailable|blocked)(\s|$)/i.test(
         el.className?.toString() || "",
       ) ||
@@ -407,6 +486,8 @@ export function readLiveSeats() {
       selected:
         el.getAttribute("aria-selected") === "true" ||
         el.getAttribute("aria-checked") === "true" ||
+        el.getAttribute("aria-pressed") === "true" ||
+        el.getAttribute("data-seat-state") === "selected" ||
         el.getAttribute("data-selected") === "true" ||
         el.classList.contains("selected") ||
         el.classList.contains("is-selected"),

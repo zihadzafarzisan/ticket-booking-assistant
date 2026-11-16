@@ -7,6 +7,11 @@ import { readFile, stat } from "node:fs/promises";
 import { resolve, sep, extname } from "node:path";
 import type { BotRunner } from "./runner";
 import type { LiveInventoryService } from "./live-inventory";
+import type { CredentialStore } from "./credentials";
+import {
+  validateBrowserEndpoint,
+  type BrowserConnection,
+} from "./browser-connection";
 import {
   STAR_CINEPLEX_LOCATIONS,
   TIME_SLOT_CONFIG,
@@ -44,6 +49,8 @@ function json(res: ServerResponse, status: number, value: unknown) {
   res.end(JSON.stringify(value));
 }
 export interface ServerOptions {
+  credentials?: CredentialStore;
+  browserConnection?: BrowserConnection;
   inventory?: LiveInventoryService;
   staticDirectory?: string;
   devHandler?: (req: IncomingMessage, res: ServerResponse) => void;
@@ -71,6 +78,15 @@ export function createBotServer(
           json(res, 200, {
             locations: STAR_CINEPLEX_LOCATIONS,
             timeSlots: TIME_SLOT_CONFIG,
+          });
+          return;
+        }
+        if (req.method === "GET" && route === "/api/settings") {
+          if (!options.credentials || !options.browserConnection)
+            throw new HttpError(503, "Browser settings are unavailable.");
+          json(res, 200, {
+            browser: options.browserConnection.settings(),
+            credentials: options.credentials.status(),
           });
           return;
         }
@@ -128,6 +144,41 @@ export function createBotServer(
           if (req.headers["x-ticket-bot"] !== "dashboard")
             throw new HttpError(403, "A dashboard request header is required.");
           const input = await body(req);
+          if (
+            route === "/api/settings/credentials" ||
+            route === "/api/settings/credentials/clear"
+          ) {
+            if (!options.credentials)
+              throw new HttpError(503, "Credential storage is unavailable.");
+            json(
+              res,
+              200,
+              route.endsWith("/clear")
+                ? await options.credentials.clear()
+                : await options.credentials.save(input),
+            );
+            return;
+          }
+          if (route === "/api/settings/browser") {
+            if (!options.browserConnection)
+              throw new HttpError(503, "Browser settings are unavailable.");
+            if (
+              runner
+                .snapshot()
+                .tasks.some((task) =>
+                  ["scanning", "selecting"].includes(task.status),
+                )
+            )
+              throw new HttpError(
+                409,
+                "Stop active seat searches before changing the browser connection.",
+              );
+            // Validate before disconnecting a working session.
+            validateBrowserEndpoint(input.endpoint);
+            await runner.browser.close();
+            json(res, 200, await options.browserConnection.configure(input));
+            return;
+          }
           if (route === "/api/live/refresh") {
             if (!options.inventory)
               throw new HttpError(
@@ -142,17 +193,26 @@ export function createBotServer(
             json(res, 201, await runner.create(input));
             return;
           }
-          if (route === "/api/browser/open") {
-            await runner.browser.openSession();
+          if (
+            route === "/api/browser/open" ||
+            route === "/api/browser/connect"
+          ) {
+            if (route === "/api/browser/open" && options.browserConnection)
+              await options.browserConnection.openRegular();
+            await runner.browser.openSession(route === "/api/browser/connect");
             json(res, 200, runner.browser.status());
             return;
           }
           const match = route.match(
-            /^\/api\/tasks\/([a-f0-9-]+)\/(stop|resume|check|reserve|complete|remove|focus)$/,
+            /^\/api\/tasks\/([a-f0-9-]+)\/(stop|resume|check|reserve|complete|remove|focus|update)$/,
           );
           if (match) {
             const [, id, action] = match;
             runner.get(id);
+            if (action === "update") {
+              json(res, 200, await runner.update(id, input));
+              return;
+            }
             if (action === "check") {
               void runner.check(id);
               json(res, 202, { ok: true });
