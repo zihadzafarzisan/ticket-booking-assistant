@@ -2,7 +2,7 @@
 
 A standalone movie ticket assistant with a web dashboard and regular Chrome/Edge tabs for cinema login and payment. No Chrome extension installation is required.
 
-Create an instant search or monitor a scheduled ticket drop. Choose the movie, show date, branches, time slots, seat tier and rows. The bot finds candidate seat blocks, checks the live cinema page, selects seats and hands checkout to you.
+Click a movie, choose your date, seat count and locations, and let the bot find seats in your connected browser. It verifies the selection and follows clear cinema payment-gateway controls, then hands payment to you. You can also watch a future date for tickets to open.
 
 **Live Cineplex** shows Star Cineplex's current movie catalog, published showtimes, halls and reported ticket availability. The bot uses this same feed for live missions.
 
@@ -29,16 +29,22 @@ Open **Live Cineplex** to browse now-showing or upcoming movies, filter by branc
 
 Hall names come from public metadata for published shows. A hall with “tickets open” has online sales open for at least one listed show; this does not indicate physical opening hours. Ticket counts are provider-reported aggregates, and actual seat selection is verified in the cinema browser.
 
-Use **Find seats** beside a show to create a mission pinned to that exact showtime, or **Monitor movie** for a movie without open online sales. Live movie titles and active branches also populate the mission form. “Ticket sales opened” notices compare successful refreshes; the first load establishes a baseline, which resets when the service restarts.
+Click a movie poster, title or **Choose date & seats** to open its booking dialog. Pick any future date, number of seats and one or more locations. The dialog immediately shows reported availability for those exact choices, showtimes/halls, and buttons for other published dates. The selected catalog movie ID is retained, so another title match cannot be booked accidentally. Aggregate seat counts do not guarantee a consecutive group; the bot verifies the actual map in your browser.
+
+The date view distinguishes available tickets, too few seats, sold out, not open, closed/counter-only, unknown availability and a schedule that has not been published. **Published dates & upcoming shows** lists the cinema's announced dates for that movie and your locations. A published `onlineSalesOpenAt` value is shown in Dhaka time; otherwise the dialog explicitly says the opening time has not been announced. The current public feed does not provide opening timestamps. Show start, release date and sales cutoff are never presented as ticket-opening times.
+
+Use **Find seats** beside an individual show for the existing exact-show shortcut. “Ticket sales opened” notices compare successful refreshes; the first load establishes a baseline, which resets when the service restarts.
 
 If the provider becomes unavailable, last-success inventory stays visible with a stale-data warning and live shortcuts are disabled. Failed live requests never substitute demo listings or invent ticket availability.
 
 1. **Settings → Connect existing browser** to use an open Chrome/Edge session with local debugging enabled, or **Open regular browser** for simple setup. The latter opens a normal window with a persistent cinema profile and reuses it for later bookings. Optionally save your Cineplex email/password in **Settings → Cineplex login**.
-2. **New mission:** choose instant search or drop monitoring, enter the movie/date/count and select branches and time slots.
-3. Expand **Seating & automation** for allowed rows, seat tier, split seating, row preference, one-show-per-branch selection or discovery without automatic selection.
-4. For a monitor, optionally set a start time. The form uses your computer's local time and sends a timezone-aware schedule. Show-date validation uses Bangladesh time.
-5. Inspect results and proposed seats. An automatic live task opens a cinema tab in the connected regular browser, or opens that browser if needed, and verifies actual seat selection before advancing.
-6. When the task needs attention or is ready for payment, use **Open browser**. The bot can submit your saved credentials when a recognized cinema login form appears before seats or at checkout. Complete OTP, CAPTCHA, other manual steps and payment yourself. **Retry selection** resumes the handoff after login. **Mark complete** records your completion; it does not claim payment was detected automatically.
+2. **Live Cineplex:** click the movie you want, then choose your date, seat count and locations. Keep seats together is enabled by default, with no hidden row or time-slot exclusions.
+3. If tickets are available, choose **Get seats & open payment**. The bot searches that exact movie/date, chooses a matching show in your locations and uses the connected regular browser to verify and select seats.
+4. If tickets or schedules are not available, choose **Watch selected date**. The saved monitor checks those exact choices every 30 seconds and starts browser selection when a qualifying show opens. It does not guess an opening time or substitute another date/movie.
+5. The bot handles saved cinema login and explicit **Continue/Proceed to payment** controls. It follows recognized SSLCOMMERZ hosted-gateway redirects, including a new tab, and stops there. Generic charge-confirmation controls such as Pay now, unrecognized gateways and missing checkout details remain manual handoffs. It never enters card details or confirms a charge. A retry after filling cinema checkout details reuses the verified selection instead of restarting the seat page.
+6. Use **Open browser** when a task needs attention. Complete OTP, CAPTCHA, required details and payment yourself. **Retry selection** resumes the handoff. **Mark complete** records your completion; it does not claim payment was detected automatically.
+
+**New mission** remains available for advanced rows, tiers, time slots, split seating, one-show-per-branch or discovery without automatic selection. Drop monitors can also have a scheduled start. Show-date validation uses Bangladesh time.
 
 **Demo mode** provides a complete local demonstration with simulated seats. It never opens a live booking or buys tickets. Branch filters still apply; sample shows include Bashundhara data.
 

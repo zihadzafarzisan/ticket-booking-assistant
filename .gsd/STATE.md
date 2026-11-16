@@ -1,6 +1,14 @@
 # Migration state
 
-Updated: 2026-11-16
+Updated: 2026-11-17
+
+## Movie-first booking
+
+- Catalog posters/titles/actions open a dedicated movie booking dialog. Date, seat count and location choices drive immediate availability, published showtimes and upcoming date previews. Unpublished schedules are distinguished from sold out and stale inventory disables booking.
+- Exact catalog movie ID is carried through validation/discovery. New bookings have no hidden row/time exclusions, auto-select live seats and explicitly request gateway handoff. Watch selected date monitors the same exact choices at 30-second intervals.
+- Only explicit `onlineSalesOpenAt` metadata becomes a ticket-opening announcement; the current public feed has no opening field. Unknown opening times are stated clearly. Release/show/cutoff dates are not used as opening estimates.
+- Browser follows explicit merchant gateway controls to recognized hosted SSLCOMMERZ pages (same tab or popup), never confirms a charge and returns manual handoffs for missing details/ambiguous controls. Retry preserves the verified selection and current checkout page.
+- Verification: production build, 90 unit/API tests, 29 browser tests and five production smoke checks passed. Desktop/mobile screenshots inspected. Activated the current build on port 4317: health and new movie dialog assets verified, all four saved missions and encrypted Cineplex login preserved. No real booking/payment was triggered. Evidence: `.gsd/JOURNAL.md`.
 
 ## Chrome approval connection repair
 

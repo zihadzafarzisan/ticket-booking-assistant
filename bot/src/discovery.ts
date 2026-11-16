@@ -26,7 +26,11 @@ export class DiscoveryService {
 
   async search(input: TaskInput, signal: AbortSignal): Promise<Candidate[]> {
     const adapter = input.source === "demo" ? this.demo : this.live;
-    const movies = await adapter.searchMovies(input.movieName);
+    const movies = (
+      await adapter.searchMovies(input.targetMovieId ? "all" : input.movieName)
+    ).filter(
+      (movie) => !input.targetMovieId || movie.id === input.targetMovieId,
+    );
     signal.throwIfAborted();
     if (!movies.length)
       throw new Error(

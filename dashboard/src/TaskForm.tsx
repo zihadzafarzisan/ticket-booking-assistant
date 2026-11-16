@@ -71,6 +71,7 @@ export default function TaskForm({
     setForm((prev) => ({
       ...prev,
       [key]: value,
+      ...(key === "movieName" ? { targetMovieId: undefined } : {}),
       ...([
         "movieName",
         "targetDate",
@@ -193,6 +194,7 @@ export default function TaskForm({
               required
               maxLength={120}
               placeholder="What are we watching?"
+              list="live-movie-titles"
               value={form.movieName}
               onChange={(e) => update("movieName", e.target.value)}
             />
@@ -201,7 +203,6 @@ export default function TaskForm({
             <label className="field">
               Show date
               <input
-                list="live-movie-titles"
                 aria-label="Show date"
                 type="date"
                 required

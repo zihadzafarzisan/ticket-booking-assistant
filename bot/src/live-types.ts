@@ -25,6 +25,7 @@ export interface LiveShow extends Showtime {
   sourceStatus: string;
   salesChannel: string;
   startsAt?: string;
+  onlineSalesOpenAt?: string;
   onlineSalesCloseAt?: string;
   availableKnown: boolean;
   priceKnown: boolean;

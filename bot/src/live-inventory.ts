@@ -88,6 +88,7 @@ export function ticketStatus(
     | "salesChannel"
     | "startsAt"
     | "onlineSalesCloseAt"
+    | "onlineSalesOpenAt"
     | "availableKnown"
     | "availableSeats"
     | "branchActive"
@@ -103,6 +104,8 @@ export function ticketStatus(
   if (["closed", "cancelled", "canceled", "archived"].includes(status))
     return "closed";
   if (status !== "selling") return status ? "not_open" : "unknown";
+  if (show.onlineSalesOpenAt && Date.parse(show.onlineSalesOpenAt) > now)
+    return "not_open";
   const channel = show.salesChannel.toLowerCase().replace(/[^a-z]/g, "");
   if (channel === "counter" || channel === "counteronly") return "counter_only";
   if (!["both", "online", "onlineonly"].includes(channel)) return "unknown";
@@ -440,6 +443,13 @@ export class LiveInventoryService {
           salesChannel:
             text(raw.effectiveSalesChannel) || text(raw.salesChannel),
           startsAt,
+          // Use only explicit sales-opening metadata; never infer from show/release dates.
+          onlineSalesOpenAt:
+            typeof raw.onlineSalesOpenAt === "string" &&
+            /(?:Z|[+-]\d{2}:\d{2})$/.test(raw.onlineSalesOpenAt) &&
+            Number.isFinite(Date.parse(raw.onlineSalesOpenAt))
+              ? new Date(raw.onlineSalesOpenAt).toISOString()
+              : undefined,
           onlineSalesCloseAt:
             startsAt && cutoff !== undefined
               ? new Date(Date.parse(startsAt) - cutoff * 60_000).toISOString()

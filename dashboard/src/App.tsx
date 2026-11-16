@@ -13,6 +13,7 @@ import TaskForm from "./TaskForm";
 import SeatInspector from "./SeatInspector";
 import LiveCineplex from "./LiveCineplex";
 import { CinemaSettings } from "./CinemaSettings";
+import MovieBooking, { type MovieBookingChoice } from "./MovieBooking";
 import type { LiveInventory } from "../../bot/src/live-types";
 
 const statusLabels: Record<TaskStatus, string> = {
@@ -140,6 +141,7 @@ export default function App() {
   const [showForm, setShowForm] = useState(false);
   const [inventory, setInventory] = useState<LiveInventory>();
   const [missionSeed, setMissionSeed] = useState<Partial<TaskInput>>();
+  const [bookingChoice, setBookingChoice] = useState<MovieBookingChoice>();
   const [editingTaskId, setEditingTaskId] = useState<string>();
   const [inspecting, setInspecting] = useState<Candidate>();
   const [creating, setCreating] = useState(false);
@@ -296,6 +298,7 @@ export default function App() {
         input,
       );
       setShowForm(false);
+      setBookingChoice(undefined);
       setMissionSeed(undefined);
       setEditingTaskId(undefined);
       setSelectedId(task.id);
@@ -525,6 +528,7 @@ export default function App() {
                 setMissionSeed(seed);
                 setShowForm(true);
               }}
+              onChooseMovie={setBookingChoice}
             />
           )}
           {page === "overview" && (
@@ -1294,6 +1298,15 @@ export default function App() {
           </footer>
         </main>
       </div>
+      {bookingChoice && inventory && (
+        <MovieBooking
+          choice={bookingChoice}
+          inventory={inventory}
+          connected={connected}
+          onClose={() => setBookingChoice(undefined)}
+          onCreate={createTask}
+        />
+      )}
       {showForm && (
         <TaskForm
           busy={creating}

@@ -7,6 +7,7 @@ import type { BrowserStatus, Handoff, TaskInput } from "./contracts";
 import type { BrowserConnection } from "./browser-connection";
 import type { CredentialStore } from "./credentials";
 import { handleCinemaLogin, isCinemaUrl } from "./cinema-login";
+import { isPaymentGatewayUrl, openPaymentGateway } from "./payment-handoff";
 
 export interface BrowserPort {
   status(): BrowserStatus;
@@ -46,6 +47,7 @@ export class BrowserDriver implements BrowserPort {
   private context?: BrowserContext;
   private launching?: Promise<BrowserContext>;
   private pages = new Map<string, Page>();
+  private selections = new Map<string, { input: string; labels: string[] }>();
   private bookingQueue: Promise<unknown> = Promise.resolve();
   constructor(
     private profilePath: string,
@@ -81,6 +83,7 @@ export class BrowserDriver implements BrowserPort {
         if (this.context === context) {
           this.context = undefined;
           this.pages.clear();
+          this.selections.clear();
         }
       });
       return context;
@@ -142,6 +145,20 @@ export class BrowserDriver implements BrowserPort {
     signal.throwIfAborted();
     const key = `${taskId}:${show.id}`;
     let page = this.pages.get(key);
+    const previous = this.selections.get(key);
+    if (
+      input.openPaymentGateway &&
+      page &&
+      !page.isClosed() &&
+      previous?.input === JSON.stringify(input) &&
+      (isPaymentGatewayUrl(page.url()) ||
+        /\/(checkout|payment|login)(\/|\?|$)/.test(
+          new URL(page.url()).pathname,
+        ))
+    ) {
+      await page.bringToFront();
+      return this.gatewayHandoff(key, page, previous.labels, signal);
+    }
     if (!page || page.isClosed()) {
       page = await context.newPage();
       this.pages.set(key, page);
@@ -320,6 +337,10 @@ export class BrowserDriver implements BrowserPort {
       })
       .filter({ visible: true })
       .first();
+    this.selections.set(key, {
+      input: JSON.stringify(input),
+      labels: [...labels],
+    });
     if ((await checkout.count()) && (await checkout.isEnabled())) {
       signal.throwIfAborted();
       await checkout.click({ timeout: 5000 });
@@ -337,12 +358,14 @@ export class BrowserDriver implements BrowserPort {
           .waitFor({ state: "visible", timeout: 2000 })
           .catch(() => {}),
       ]);
-      const checkoutLogin = await handleCinemaLogin(
-        page,
-        this.options.credentials?.get(),
-        loginAttempt,
-        signal,
-      );
+      const checkoutLogin = isPaymentGatewayUrl(page.url())
+        ? undefined
+        : await handleCinemaLogin(
+            page,
+            this.options.credentials?.get(),
+            loginAttempt,
+            signal,
+          );
       if (checkoutLogin) return userHandoff(checkoutLogin, labels);
       if (
         loginAttempt.submitted &&
@@ -362,18 +385,30 @@ export class BrowserDriver implements BrowserPort {
         }
       }
       await page
-        .waitForURL(/\/(checkout|payment)(\/|\?|$)/, { timeout: 10_000 })
+        .waitForURL(
+          (url) =>
+            isPaymentGatewayUrl(url.href) ||
+            /\/(checkout|payment)(\/|\?|$)/.test(url.pathname),
+          { timeout: 10_000 },
+        )
         .catch(() => {});
     }
     signal.throwIfAborted();
-    const finalLogin = await handleCinemaLogin(
-      page,
-      this.options.credentials?.get(),
-      loginAttempt,
-      signal,
-    );
+    const finalLogin = isPaymentGatewayUrl(page.url())
+      ? undefined
+      : await handleCinemaLogin(
+          page,
+          this.options.credentials?.get(),
+          loginAttempt,
+          signal,
+        );
     if (finalLogin) return userHandoff(finalLogin, labels);
-    if (/\/(checkout|payment)(\/|\?|$)/.test(new URL(page.url()).pathname))
+    if (input.openPaymentGateway)
+      return this.gatewayHandoff(key, page, labels, signal, loginAttempt);
+    if (
+      isPaymentGatewayUrl(page.url()) ||
+      /\/(checkout|payment)(\/|\?|$)/.test(new URL(page.url()).pathname)
+    )
       return {
         status: "awaiting_payment",
         message:
@@ -386,12 +421,35 @@ export class BrowserDriver implements BrowserPort {
       labels,
     );
   }
+  private async gatewayHandoff(
+    key: string,
+    page: Page,
+    labels: string[],
+    signal: AbortSignal,
+    attempt = { submitted: false },
+  ): Promise<Handoff> {
+    const result = await openPaymentGateway(
+      page,
+      this.options.credentials?.get(),
+      attempt,
+      signal,
+    );
+    this.pages.set(key, result.page);
+    await result.page.bringToFront();
+    return {
+      status: result.ready ? "awaiting_payment" : "awaiting_user",
+      url: result.page.url(),
+      selectedSeats: [...labels],
+      message: result.message,
+    };
+  }
   async cancel(taskId: string) {
     // Closing in-progress selection pages cancels pending locator/navigation operations.
     for (const [key, page] of this.pages)
       if (key.startsWith(`${taskId}:`)) {
         await page.close().catch(() => {});
         this.pages.delete(key);
+        this.selections.delete(key);
       }
   }
   async close() {
@@ -399,6 +457,7 @@ export class BrowserDriver implements BrowserPort {
     else await this.context?.close();
     this.context = undefined;
     this.pages.clear();
+    this.selections.clear();
   }
 }
 

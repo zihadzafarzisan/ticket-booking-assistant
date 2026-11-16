@@ -36,3 +36,9 @@ The in-app browser preview host was unavailable. Visual QA used screenshots from
 - Browser fixture verifies actual CDP transport behind an HTTP-404 discovery server and delayed WebSocket handshake; concurrent requests create one connection attempt. Dashboard fixture verifies visible Chrome approval guidance while awaiting connection. Inspected `test-results/chrome-approval-guidance.png`.
 - Five production fixture smoke checks passed.
 - Installed-session proof: after the user's Chrome approval, production `POST /api/browser/connect` returned HTTP 200 in three seconds, with `connected: true`, `pages: 2`, `headless: false`, `mode: regular`. Subsequent `/api/state` confirmed the connection remained active and all three saved missions remained present. No real reservation/payment was executed.
+# Movie-first booking verification — 2026-11-17
+
+- Build passed, 90 unit/API tests passed, 29 browser tests passed and five production smoke checks passed. Evidence and screenshots are recorded in `.gsd/JOURNAL.md`.
+- Catalog movie selection now retains the exact movie ID; selected-date availability uses date/count/location filters, differentiates unpublished schedules from sold out and does not authorize booking from stale inventory.
+- Published opening metadata display and unavailable-date monitoring payloads are tested. No opening timestamp is inferred when the current public feed omits it.
+- Actual test-browser transport verifies same-tab and popup gateway redirects after exact seat selection, stops at the hosted gateway, leaves ambiguous charge controls manual and preserves checkout selection on retry. Real reservations/payments were not performed.

@@ -3003,6 +3003,8 @@ h1 {
   min-width: 0;
 }
 .movie-poster {
+  width: 100%;
+  border: 0;
   position: relative;
   aspect-ratio: 2/2.65;
   display: grid;
@@ -3010,6 +3012,174 @@ h1 {
   background: radial-gradient(circle at 75% 30%, #48583d, #222f2b 65%);
   color: #8ba075;
   overflow: hidden;
+}
+.movie-title-button {
+  background: none;
+  border: 0;
+  padding: 0;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+.movie-title-button:hover {
+  color: var(--lime);
+}
+.movie-booking-dialog {
+  width: min(780px, calc(100vw - 28px));
+}
+.booking-movie {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  margin-bottom: 24px;
+}
+.booking-poster {
+  width: 62px;
+  height: 86px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface-2);
+  color: var(--lime);
+}
+.booking-poster img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.booking-movie strong {
+  font-size: 14px;
+}
+.booking-movie p,
+.booking-movie small {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.7;
+}
+.booking-availability {
+  padding: 20px;
+  margin: 22px 0;
+  border: 1px solid #514737;
+  background: #302a21;
+  border-radius: 12px;
+}
+.booking-availability.available {
+  border-color: #53663b;
+  background: #263022;
+}
+.booking-availability h3 {
+  font-size: 18px;
+  margin: 10px 0;
+}
+.booking-availability p,
+.booking-availability small {
+  color: #b6c0be;
+  font-size: 12px;
+  line-height: 1.75;
+}
+.booking-availability small {
+  display: block;
+  margin-top: 10px;
+  font-size: 10px;
+}
+.booking-opening {
+  margin-top: 12px;
+  font-weight: 600;
+}
+.booking-show-list,
+.booking-upcoming {
+  margin: 24px 0;
+}
+.booking-show-list h3,
+.booking-upcoming h3 {
+  font-size: 13px;
+  margin-bottom: 14px;
+}
+.booking-show-list > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--border);
+  padding: 12px 0;
+}
+.booking-show-list strong {
+  font-size: 13px;
+}
+.booking-show-list small {
+  display: block;
+  color: var(--muted);
+  font-size: 10px;
+  margin-top: 6px;
+}
+.booking-date-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  margin-bottom: 12px;
+}
+.booking-date-options button {
+  min-width: 140px;
+  flex: 1 1 140px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  padding: 14px;
+  border-radius: 9px;
+  text-align: left;
+}
+.booking-date-options button.selected {
+  border-color: var(--lime);
+}
+.booking-date-options strong,
+.booking-date-options span,
+.booking-date-options small {
+  display: block;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.booking-date-options span,
+.booking-date-options small,
+.booking-upcoming > small,
+.booking-upcoming > p {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.7;
+}
+.booking-handoff {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: var(--surface-2);
+  padding: 14px;
+  border-radius: 9px;
+  margin-top: 18px;
+}
+.booking-handoff svg {
+  color: var(--lime);
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+.booking-handoff p {
+  color: #adb7c1;
+  font-size: 11px;
+  line-height: 1.8;
+}
+@media (max-width: 600px) {
+  .movie-booking-dialog .dialog-footer {
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .movie-booking-dialog .dialog-footer .button {
+    flex: 1 1 auto;
+  }
+  .booking-show-list > div {
+    flex-wrap: wrap;
+  }
+  .booking-availability {
+    padding: 15px;
+  }
 }
 .movie-poster:before {
   content: "";

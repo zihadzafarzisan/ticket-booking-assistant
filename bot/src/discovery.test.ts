@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DiscoveryService, eligibleBlocks } from "./discovery";
 import { DemoAdapter, type SeatMap } from "../../packages/core/src";
 import { validateTask } from "./contracts";
@@ -14,6 +14,26 @@ const input = () =>
     preferredTimes: ["afternoon"],
   });
 describe("standalone discovery", () => {
+  it("uses the selected catalog movie ID instead of another title match", async () => {
+    const demo = new DemoAdapter();
+    vi.spyOn(demo, "searchMovies").mockResolvedValue([
+      { id: "wrong-movie", title: "Demo film" },
+      { id: "chosen-movie", title: "Demo film" },
+    ]);
+    const shows = vi.spyOn(demo, "getShowtimes");
+    await new DiscoveryService(demo, demo).search(
+      { ...input(), targetMovieId: "chosen-movie" },
+      new AbortController().signal,
+    );
+    expect(shows).toHaveBeenCalledOnce();
+    expect(shows.mock.calls[0][0].id).toBe("chosen-movie");
+    expect(() => validateTask({ ...input(), targetMovieId: "../bad" })).toThrow(
+      "selected movie",
+    );
+    expect(() =>
+      validateTask({ ...input(), openPaymentGateway: "true" }),
+    ).toThrow("openPaymentGateway");
+  });
   it("pins a live-selected mission to the exact show ID", async () => {
     const config = { ...input(), targetShowId: "demo-show-1" };
     const results = await new DiscoveryService(

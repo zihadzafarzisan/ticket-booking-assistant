@@ -16,6 +16,8 @@ export type TaskStatus =
   | "stopped"
   | "error";
 export interface TaskInput {
+  targetMovieId?: string;
+  openPaymentGateway?: boolean;
   targetShowId?: string;
   movieName: string;
   targetDate: string;
@@ -91,6 +93,9 @@ export function validateTask(value: unknown): TaskInput {
   const text = (key: string) =>
     typeof v[key] === "string" ? (v[key] as string).trim() : "";
   const movieName = text("movieName");
+  const targetMovieId = text("targetMovieId") || undefined;
+  if (targetMovieId && !/^[a-zA-Z0-9-]{1,100}$/.test(targetMovieId))
+    throw new Error("Invalid selected movie.");
   const targetShowId = text("targetShowId") || undefined;
   if (targetShowId && !/^[a-zA-Z0-9-]{1,100}$/.test(targetShowId))
     throw new Error("Invalid selected show.");
@@ -150,10 +155,12 @@ export function validateTask(value: unknown): TaskInput {
       !Number.isFinite(Date.parse(scheduledAt)))
   )
     throw new Error("The schedule must include a valid timezone.");
-  for (const key of ["keepTogether", "autoReserve"])
+  for (const key of ["keepTogether", "autoReserve", "openPaymentGateway"])
     if (v[key] !== undefined && typeof v[key] !== "boolean")
       throw new Error(`Invalid ${key}.`);
   return {
+    targetMovieId,
+    openPaymentGateway: v.openPaymentGateway === true,
     targetShowId,
     movieName,
     targetDate,

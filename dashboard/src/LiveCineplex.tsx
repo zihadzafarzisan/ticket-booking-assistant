@@ -8,6 +8,7 @@ import type {
 import type { TaskInput } from "../../bot/src/contracts";
 import { getTimeSlot } from "../../packages/core/src";
 import { Icon } from "./icons";
+import type { MovieBookingChoice } from "./MovieBooking";
 
 const labels: Record<TicketStatus, string> = {
   open: "Online sales open",
@@ -31,11 +32,13 @@ export default function LiveCineplex({
   connected,
   onRefresh,
   onCreate,
+  onChooseMovie,
 }: {
   inventory?: LiveInventory;
   connected: boolean;
   onRefresh: () => Promise<unknown>;
   onCreate: (seed: Partial<TaskInput>) => void;
+  onChooseMovie: (choice: MovieBookingChoice) => void;
 }) {
   const [tab, setTab] = useState<"movies" | "shows" | "halls">("movies");
   const [query, setQuery] = useState("");
@@ -109,6 +112,7 @@ export default function LiveCineplex({
     );
     onCreate({
       movieName: movie.title,
+      targetMovieId: movie.id,
       targetDate: matching?.date || date || today,
       source: "live",
       mode: matching?.ticketStatus === "open" ? "instant" : "monitor",
@@ -118,6 +122,14 @@ export default function LiveCineplex({
       autoReserve: true,
     });
   };
+  const chooseMovie = (movie: LiveMovie) =>
+    onChooseMovie({
+      movie,
+      date: date || undefined,
+      locationIds: branch
+        ? [inventory!.branches.find((item) => item.id === branch)!.locationId]
+        : [],
+    });
   const refresh = async () => {
     setRefreshing(true);
     try {
@@ -401,7 +413,12 @@ export default function LiveCineplex({
                 const open = options.filter((s) => s.ticketStatus === "open");
                 return (
                   <article className="live-movie-card" key={movie.id}>
-                    <div className="movie-poster">
+                    <button
+                      type="button"
+                      className="movie-poster"
+                      aria-label={`Book ${movie.title}`}
+                      onClick={() => chooseMovie(movie)}
+                    >
                       <Icon name="film" size={40} />
                       {movie.posterUrl?.startsWith("https://") && (
                         <img
@@ -420,7 +437,7 @@ export default function LiveCineplex({
                             ? "COMING SOON"
                             : "CATALOG"}
                       </span>
-                    </div>
+                    </button>
                     <div className="live-movie-info">
                       <div className="movie-badges">
                         {movie.formats.slice(0, 3).map((format) => (
@@ -428,7 +445,15 @@ export default function LiveCineplex({
                         ))}
                         {movie.duration && <small>{movie.duration} min</small>}
                       </div>
-                      <h2>{movie.title}</h2>
+                      <h2>
+                        <button
+                          type="button"
+                          className="movie-title-button"
+                          onClick={() => chooseMovie(movie)}
+                        >
+                          {movie.title}
+                        </button>
+                      </h2>
                       <p>
                         {movie.language?.toUpperCase() || "Language not listed"}
                         {movie.genres?.length
@@ -459,10 +484,9 @@ export default function LiveCineplex({
                         </button>
                         <button
                           className="button primary compact"
-                          disabled={!fresh}
-                          onClick={() => seed(movie)}
+                          onClick={() => chooseMovie(movie)}
                         >
-                          {open.length ? "Find seats" : "Monitor movie"}
+                          Choose date & seats
                           <Icon
                             name={open.length ? "arrow" : "clock"}
                             size={13}
