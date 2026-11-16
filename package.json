@@ -16,6 +16,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "test:smoke": "node scripts/smoke.mjs",
+    "test:smoke:live": "node scripts/smoke.mjs --live",
     "extension:dev": "npm run dev --workspace=extension",
     "extension:build": "npm run build --workspace=extension",
     "browser:install": "playwright install chromium",
