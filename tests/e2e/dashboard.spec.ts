@@ -70,6 +70,10 @@ test("mobile dashboard and scheduled monitor cancellation", async ({
   await page.goto("/");
   await page.getByRole("button", { name: "New mission", exact: true }).click();
   await page.getByLabel("Movie name").fill("Dune scheduled fixture");
+  await page.getByRole("button", { name: "Any row", exact: true }).click();
+  await page.getByRole("button", { name: "D", exact: true }).click();
+  await page.getByRole("button", { name: "Any time", exact: true }).click();
+  await page.getByRole("button", { name: /Night.*After 9 PM/ }).click();
   await page.getByRole("button", { name: /Monitor a drop/ }).click();
   await page.getByLabel("Demo mode", { exact: true }).check();
   const future = new Date(Date.now() + 3600_000);
@@ -84,6 +88,14 @@ test("mobile dashboard and scheduled monitor cancellation", async ({
   await expect(
     page.getByText("Armed and ready.", { exact: true }),
   ).toBeVisible();
+  await expect(page.locator(".mission-specs")).toContainText("Night");
+  const saved = await (await request.get("/api/state")).json();
+  expect(
+    saved.tasks.find(
+      (task: { input: { movieName: string } }) =>
+        task.input.movieName === "Dune scheduled fixture",
+    ).input,
+  ).toMatchObject({ allowedRows: ["D"], preferredTimes: ["night"] });
   await page.screenshot({
     path: "test-results/dashboard-mobile.png",
     fullPage: true,

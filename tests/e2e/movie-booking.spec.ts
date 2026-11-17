@@ -35,6 +35,30 @@ test("movie click previews dates, seats and branches and submits the exact booki
   await expect(
     dialog.getByText("8 seats reported", { exact: true }),
   ).toBeVisible();
+  await dialog.getByRole("button", { name: "B", exact: true }).click();
+  await dialog.getByRole("button", { name: "C", exact: true }).click();
+  await dialog.getByRole("button", { name: /Morning/ }).click();
+  await expect(
+    dialog.getByRole("heading", {
+      name: "No shows at selected times",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    dialog.getByText("8 seats reported", { exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    dialog.getByRole("button", { name: "Watch selected date", exact: true }),
+  ).toBeEnabled();
+  await dialog.getByRole("button", { name: "Any time", exact: true }).click();
+  await expect(
+    dialog.getByRole("heading", { name: "Tickets available", exact: true }),
+  ).toBeVisible();
+  await dialog.getByRole("button", { name: /Afternoon/ }).click();
+  await expect(
+    dialog.getByText("8 seats reported", { exact: true }),
+  ).toBeVisible();
+  await expect(dialog.getByText("sold out", { exact: true })).toHaveCount(0);
   await page.screenshot({
     path: "test-results/movie-booking-desktop.png",
     fullPage: true,
@@ -52,8 +76,8 @@ test("movie click previews dates, seats and branches and submits the exact booki
     mode: "instant",
     autoReserve: true,
     openPaymentGateway: true,
-    allowedRows: [],
-    preferredTimes: [],
+    allowedRows: ["B", "C"],
+    preferredTimes: ["afternoon"],
   });
   expect(submitted?.targetShowId).toBeUndefined();
   await dialog.getByLabel("Booking seat count", { exact: true }).fill("9");
@@ -63,6 +87,11 @@ test("movie click previews dates, seats and branches and submits the exact booki
       exact: true,
     }),
   ).toBeVisible();
+  await dialog.getByRole("button", { name: "Any row", exact: true }).click();
+  await expect(
+    dialog.getByRole("button", { name: "B", exact: true }),
+  ).toHaveAttribute("aria-pressed", "false");
+  await dialog.getByRole("button", { name: "Any time", exact: true }).click();
   await dialog
     .getByRole("button", { name: "Sony Square", exact: true })
     .click();
@@ -117,6 +146,8 @@ test("upcoming movie distinguishes unpublished dates from sold out and watches s
   ).toBeVisible();
   await dialog.getByLabel("Booking date", { exact: true }).fill(future);
   await dialog.getByLabel("Booking seat count", { exact: true }).fill("4");
+  await dialog.getByRole("button", { name: "D", exact: true }).click();
+  await dialog.getByRole("button", { name: /Evening/ }).click();
   await dialog
     .getByRole("button", { name: "Sony Square", exact: true })
     .click();
@@ -146,6 +177,8 @@ test("upcoming movie distinguishes unpublished dates from sold out and watches s
     requiredSeats: 4,
     locationIds: ["sony-square"],
     mode: "monitor",
+    allowedRows: ["D"],
+    preferredTimes: ["evening"],
     autoReserve: true,
     openPaymentGateway: true,
   });

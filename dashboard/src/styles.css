@@ -1205,7 +1205,7 @@ h1 {
 }
 .mission-specs {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   border: 1px solid #2e353c;
   background: #161b20;
   border-radius: 10px;

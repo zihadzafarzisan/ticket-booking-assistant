@@ -1,9 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  STAR_CINEPLEX_LOCATIONS,
-  TIME_SLOT_CONFIG,
-  type TimeSlot,
-} from "../../packages/core/src";
+import { STAR_CINEPLEX_LOCATIONS } from "../../packages/core/src";
 import type { TaskInput } from "../../bot/src/contracts";
 import type {
   LiveMovie,
@@ -13,6 +9,7 @@ import type {
 } from "../../bot/src/live-types";
 import { explainMovieAvailability } from "../../bot/src/availability";
 import { Icon } from "./icons";
+import BookingPreferences from "./BookingPreferences";
 export const today = () =>
   new Date(Date.now() + 6 * 3600_000).toISOString().slice(0, 10);
 export default function TaskForm({
@@ -312,23 +309,12 @@ export default function TaskForm({
                 : "All supported branches"}
             </small>
           </div>
-          <div className="field">
-            Preferred showtimes
-            <div className="slot-choices">
-              {(Object.keys(TIME_SLOT_CONFIG) as TimeSlot[]).map((slot) => (
-                <button
-                  type="button"
-                  key={slot}
-                  aria-pressed={form.preferredTimes.includes(slot)}
-                  className={`choice ${form.preferredTimes.includes(slot) ? "selected" : ""}`}
-                  onClick={() => toggle("preferredTimes", slot)}
-                >
-                  {TIME_SLOT_CONFIG[slot].label}
-                  <small>{TIME_SLOT_CONFIG[slot].desc}</small>
-                </button>
-              ))}
-            </div>
-          </div>
+          <BookingPreferences
+            allowedRows={form.allowedRows}
+            preferredTimes={form.preferredTimes}
+            onRowsChange={(rows) => update("allowedRows", rows)}
+            onTimesChange={(times) => update("preferredTimes", times)}
+          />
           {form.mode === "monitor" && (
             <div className="form-row">
               <label className="field">
@@ -372,41 +358,6 @@ export default function TaskForm({
           </button>
           {advanced && (
             <div className="advanced-fields">
-              <div className="field">
-                Rows
-                <div className="row-choices">
-                  {[
-                    "A",
-                    "B",
-                    "C",
-                    "D",
-                    "E",
-                    "F",
-                    "G",
-                    "H",
-                    "J",
-                    "K",
-                    "L",
-                    "M",
-                    "N",
-                  ].map((row) => (
-                    <button
-                      key={row}
-                      type="button"
-                      aria-pressed={form.allowedRows.includes(row)}
-                      className={`choice ${form.allowedRows.includes(row) ? "selected" : ""}`}
-                      onClick={() => toggle("allowedRows", row)}
-                    >
-                      {row}
-                    </button>
-                  ))}
-                </div>
-                <small>
-                  {form.allowedRows.length
-                    ? "Only these rows will be selected."
-                    : "Any available row."}
-                </small>
-              </div>
               <div className="form-row">
                 <label className="field">
                   Seat tier

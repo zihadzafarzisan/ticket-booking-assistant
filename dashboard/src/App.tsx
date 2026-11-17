@@ -16,6 +16,7 @@ import { CinemaSettings } from "./CinemaSettings";
 import MovieBooking, { type MovieBookingChoice } from "./MovieBooking";
 import type { LiveInventory } from "../../bot/src/live-types";
 import { explainMovieAvailability } from "../../bot/src/availability";
+import { TIME_SLOT_CONFIG } from "../../packages/core/src";
 
 const statusLabels: Record<TaskStatus, string> = {
   queued: "Queued",
@@ -943,6 +944,14 @@ export default function App() {
                   <span>ROWS</span>
                   <strong>
                     {selected.input.allowedRows.join(", ") || "Any row"}
+                  </strong>
+                </div>
+                <div>
+                  <span>SHOWTIMES</span>
+                  <strong>
+                    {selected.input.preferredTimes
+                      .map((slot) => TIME_SLOT_CONFIG[slot].label)
+                      .join(", ") || "Any time"}
                   </strong>
                 </div>
                 <div>

@@ -7,6 +7,8 @@ import {
 } from "../../bot/src/availability";
 import { Icon } from "./icons";
 import { today } from "./TaskForm";
+import { getTimeSlot, type TimeSlot } from "../../packages/core/src";
+import BookingPreferences from "./BookingPreferences";
 
 export interface MovieBookingChoice {
   movie: LiveMovie;
@@ -46,6 +48,8 @@ export default function MovieBooking({
   const [count, setCount] = useState(2);
   const [locations, setLocations] = useState(choice.locationIds);
   const [together, setTogether] = useState(true);
+  const [allowedRows, setAllowedRows] = useState<string[]>([]);
+  const [preferredTimes, setPreferredTimes] = useState<TimeSlot[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => {
@@ -54,7 +58,11 @@ export default function MovieBooking({
   const movie =
     inventory.movies.find((item) => item.id === choice.movie.id) ||
     choice.movie;
-  const availability = movieDateAvailability(
+  const matchingShows = inventory.shows.filter(
+    (show) =>
+      !preferredTimes.length || preferredTimes.includes(getTimeSlot(show.time)),
+  );
+  const dateAvailability = movieDateAvailability(
     inventory.shows,
     inventory.branches,
     movie.id,
@@ -62,6 +70,16 @@ export default function MovieBooking({
     locations,
     count,
   );
+  const availability = movieDateAvailability(
+    matchingShows,
+    inventory.branches,
+    movie.id,
+    date,
+    locations,
+    count,
+  );
+  const excludedByTimes =
+    dateAvailability.shows.length > 0 && availability.shows.length === 0;
   const fresh = connected && inventory.status === "live";
   const canBook = availability.state === "available";
   const valid = Number.isInteger(count) && count >= 1 && count <= 50;
@@ -76,7 +94,7 @@ export default function MovieBooking({
     .map((day) => ({
       day,
       data: movieDateAvailability(
-        inventory.shows,
+        matchingShows,
         inventory.branches,
         movie.id,
         day,
@@ -84,7 +102,17 @@ export default function MovieBooking({
         count,
       ),
     }))
-    .filter((item) => item.data.shows.length)
+    .filter(
+      (item) =>
+        movieDateAvailability(
+          inventory.shows,
+          inventory.branches,
+          movie.id,
+          item.day,
+          locations,
+          count,
+        ).shows.length,
+    )
     .slice(0, 10);
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -103,8 +131,8 @@ export default function MovieBooking({
         autoReserve: true,
         openPaymentGateway: true,
         intervalSeconds: 30,
-        allowedRows: [],
-        preferredTimes: [],
+        allowedRows,
+        preferredTimes,
         preferredCategory: "any",
         rowPreference: "center",
         strategy: "best",
@@ -131,8 +159,8 @@ export default function MovieBooking({
             <span className="eyebrow">YOUR MOVIE NIGHT</span>
             <h2>{movie.title}</h2>
             <p>
-              Choose your date, seats and locations. Your bot handles the seat
-              search.
+              Choose your date, seats, rows, times and locations. Your bot
+              handles the seat search.
             </p>
           </div>
           <button
@@ -246,6 +274,12 @@ export default function MovieBooking({
                 : `${locations.length} selected location${locations.length === 1 ? "" : "s"}`}
             </small>
           </section>
+          <BookingPreferences
+            allowedRows={allowedRows}
+            preferredTimes={preferredTimes}
+            onRowsChange={setAllowedRows}
+            onTimesChange={setPreferredTimes}
+          />
           <section
             className={`booking-availability ${fresh && canBook ? "available" : ""}`}
             aria-live="polite"
@@ -256,18 +290,22 @@ export default function MovieBooking({
             </span>
             <h3>
               {fresh
-                ? availabilityLabels[availability.state]
+                ? excludedByTimes
+                  ? "No shows at selected times"
+                  : availabilityLabels[availability.state]
                 : "Live availability needs a refresh"}
             </h3>
             <p>
               {fresh
-                ? canBook
-                  ? `${availability.bookableShows.length} show${availability.bookableShows.length === 1 ? " has" : "s have"} at least ${count} reported seats in your selected locations.`
-                  : availability.state === "insufficient"
-                    ? "Available seats are spread across shows or below your requested count. Try fewer seats, another date or more locations."
-                    : availability.state === "unpublished"
-                      ? "Cineplex has not published shows for these choices. This does not mean the date is sold out."
-                      : "Choose another date or watch these choices for a sales opening."
+                ? excludedByTimes
+                  ? "Published shows on this date fall outside your time slots. Choose Any time or change your preferred showtimes."
+                  : canBook
+                    ? `${availability.bookableShows.length} show${availability.bookableShows.length === 1 ? " has" : "s have"} at least ${count} reported seats matching your locations and time slots. Selected rows are verified in your browser.`
+                    : availability.state === "insufficient"
+                      ? "Available seats are spread across shows or below your requested count. Try fewer seats, another date or more locations."
+                      : availability.state === "unpublished"
+                        ? "Cineplex has not published shows for these choices. This does not mean the date is sold out."
+                        : "Choose another date or watch these choices for a sales opening."
                 : "The last snapshot cannot confirm tickets. Refresh Live Cineplex before starting a booking."}
             </p>
             {!canBook && (
@@ -328,7 +366,11 @@ export default function MovieBooking({
                     onClick={() => setDate(day)}
                   >
                     <strong>{dayLabel(day)}</strong>
-                    <span>{availabilityLabels[data.state]}</span>
+                    <span>
+                      {data.shows.length
+                        ? availabilityLabels[data.state]
+                        : "No shows at selected times"}
+                    </span>
                     {data.openingAt && (
                       <small>Opens {timeLabel(data.openingAt)}</small>
                     )}
@@ -364,7 +406,7 @@ export default function MovieBooking({
             <p>
               {canBook
                 ? "Your bot will use the connected browser, select the seats and continue toward the payment gateway. You complete login challenges, required checkout details and payment."
-                : "Watching checks this exact movie, date, seat count and locations. When tickets become available, the bot uses your connected browser to select seats and open payment."}
+                : "Watching checks this exact movie, date, seat count, rows, time slots and locations. When tickets become available, the bot uses your connected browser to select seats and open payment."}
             </p>
           </div>
           {error && (
