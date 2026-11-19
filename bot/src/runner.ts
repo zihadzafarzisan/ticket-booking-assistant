@@ -30,6 +30,7 @@ export class BotRunner {
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
   private listeners = new Set<() => void>();
   private startedAt = new Date().toISOString();
+  private seq = 0;
   private shuttingDown = false;
   constructor(
     private store: TaskStore,
@@ -79,6 +80,7 @@ export class BotRunner {
       browser: this.browser.status(),
       startedAt: this.startedAt,
       version: "0.2.0",
+      seq: this.seq,
     };
   }
   get(id: string) {
@@ -87,6 +89,7 @@ export class BotRunner {
     return task;
   }
   private emit() {
+    this.seq++;
     for (const listener of this.listeners) listener();
   }
   private async persist() {
@@ -174,18 +177,25 @@ export class BotRunner {
     this.timers.delete(id);
     const controller = new AbortController();
     this.controllers.set(id, controller);
+    const prevWait = task.waitReason?.message;
+    const isRepeatMonitorCheck =
+      task.input.mode === "monitor" && task.checks > 0 && !task.results.length;
     task.status = "scanning";
     task.checks++;
     task.lastCheckAt = new Date().toISOString();
     task.nextCheckAt = undefined;
     task.error = undefined;
     task.waitReason = undefined;
-    this.log(
-      task,
-      `Check ${task.checks}: searching ${task.input.movieName} on ${task.input.targetDate}.`,
-    );
+    if (!isRepeatMonitorCheck) {
+      this.log(
+        task,
+        `Check ${task.checks}: searching ${task.input.movieName} on ${task.input.targetDate}.`,
+      );
+    }
+    let shouldPersist = !isRepeatMonitorCheck || task.checks % 30 === 0;
     try {
-      await this.persist();
+      if (shouldPersist) await this.persist();
+      else this.emit();
       const results = await this.discovery.search(
         task.input,
         controller.signal,
@@ -193,6 +203,7 @@ export class BotRunner {
       controller.signal.throwIfAborted();
       task.results = results;
       if (results.length) {
+        shouldPersist = true;
         this.log(
           task,
           `${results.length} matching seat option${results.length === 1 ? "" : "s"} found.`,
@@ -212,18 +223,24 @@ export class BotRunner {
         controller.signal.throwIfAborted();
         task.status =
           task.input.mode === "monitor" ? "monitoring" : "awaiting_user";
-        this.log(
-          task,
+        const nextMsg =
           task.waitReason?.message ||
-            (task.input.mode === "monitor"
-              ? "No matching seats yet. Monitoring continues."
-              : "No seats match these choices. Adjust the date, rows or branches and try again."),
-          task.input.mode === "monitor" ? "info" : "warning",
-        );
+          (task.input.mode === "monitor"
+            ? "No matching seats yet. Monitoring continues."
+            : "No seats match these choices. Adjust the date, rows or branches and try again.");
+        if (!isRepeatMonitorCheck || nextMsg !== prevWait) {
+          shouldPersist = true;
+          this.log(
+            task,
+            nextMsg,
+            task.input.mode === "monitor" ? "info" : "warning",
+          );
+        }
       }
     } catch (error) {
       if (controller.signal.aborted) return;
-      task.error = (error as Error).message;
+      shouldPersist = true;
+      task.error = cleanErrorMessage(error);
       this.log(task, task.error, "error");
       task.status = task.input.mode === "monitor" ? "monitoring" : "error";
     } finally {
@@ -231,7 +248,8 @@ export class BotRunner {
       if (!controller.signal.aborted && !this.shuttingDown) {
         if (task.status === "monitoring")
           this.schedule(task, task.input.intervalSeconds * 1000);
-        await this.persist();
+        if (shouldPersist) await this.persist();
+        else this.emit();
       }
     }
   }
@@ -299,7 +317,7 @@ export class BotRunner {
     } catch (error) {
       if (!controller.signal.aborted) {
         task.status = "error";
-        task.error = (error as Error).message;
+        task.error = cleanErrorMessage(error);
         this.log(task, task.error, "error");
       }
     } finally {
@@ -393,4 +411,10 @@ export class BotRunner {
     await this.browser.close();
     await this.store.flush();
   }
+}
+
+function cleanErrorMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  // eslint-disable-next-line no-control-regex
+  return raw.replace(/\u001b\[[0-9;]*m/g, "").trim();
 }

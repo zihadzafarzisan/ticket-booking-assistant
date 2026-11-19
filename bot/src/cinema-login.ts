@@ -33,18 +33,45 @@ export async function handleCinemaLogin(
   signal.throwIfAborted();
   if (!isCinemaUrl(page.url()))
     return "The browser left the supported cinema website. Review it before continuing.";
+  const isLoginPath = /\/(login|signin|sign-in|auth)(\/|\?|$)/i.test(
+    new URL(page.url()).pathname,
+  );
   const challenge = page
     .locator(
-      'input[autocomplete="one-time-code"], input[name*="otp" i], iframe[src*="recaptcha"], iframe[src*="hcaptcha"], [data-sitekey]',
+      'input[autocomplete="one-time-code"], input[name*="otp" i], iframe[src*="recaptcha"], iframe[src*="hcaptcha"], iframe[src*="challenges.cloudflare.com"], [data-sitekey], [aria-label*="Quick check that you are a person" i]',
     )
     .filter({ visible: true });
-  if (await challenge.count())
-    return "Complete the cinema OTP or CAPTCHA in your browser, then retry.";
+  const turnstileInput = page.locator('input[name="cf-turnstile-response"]');
+  const hasUnresolvedTurnstile = async () => {
+    if (!(await turnstileInput.count())) return false;
+    const token = await turnstileInput
+      .first()
+      .inputValue()
+      .catch(() => "");
+    return !token.trim();
+  };
   const password = page
     .locator('input[type="password"]')
     .filter({ visible: true })
     .first();
-  if (!(await password.count())) return undefined;
+  // On SPA redirects to /login, wait briefly for login inputs or challenges to hydrate.
+  if (isLoginPath && !(await password.count()) && !(await challenge.count())) {
+    await page
+      .locator(
+        'input[type="password"], input[type="email"], input[type="tel"], input[autocomplete="one-time-code"], input[name*="otp" i], iframe[src*="recaptcha"], iframe[src*="hcaptcha"], iframe[src*="challenges.cloudflare.com"], [data-sitekey]',
+      )
+      .first()
+      .waitFor({ state: "visible", timeout: 3500 })
+      .catch(() => {});
+    signal.throwIfAborted();
+  }
+  if ((await challenge.count()) || (await hasUnresolvedTurnstile()))
+    return "Complete the cinema OTP or CAPTCHA in your browser and sign in once (your regular browser keeps you signed in for future bookings), then retry.";
+  if (!(await password.count())) {
+    if (isLoginPath)
+      return "The cinema requires login on this page. Sign in in your browser, then retry.";
+    return undefined;
+  }
   if (!credentials)
     return "The cinema requires login. Add your Cineplex email and password in Settings, or sign in in this browser, then retry.";
   if (attempt.submitted)

@@ -364,30 +364,29 @@ export class StarCineplexAdapter extends CinemaAdapter {
   }
 
   /**
-   * Parse the real physical seat map from inventory API into our normalized SeatMap model
+   * Parse the real physical seat map from inventory API into our normalized SeatMap model.
+   * Public seat-map endpoints expose physical hall layout rather than live per-seat holds,
+   * so we never synthesize fake occupied clusters: shows with zero reported availability are
+   * marked fully occupied, while open shows expose physical layout candidates (respecting
+   * sections and column/aisle gaps) for live verification in the cinema browser.
    */
   private parseApiSeatMap(rawMap: ApiSeatMap, showtime: Showtime): SeatMap {
     const rowsMap = new Map<string, Seat[]>();
-    const totalCapacity = showtime.totalSeats || 100;
-    const availableCount = Math.min(
-      showtime.availableSeats || totalCapacity,
-      totalCapacity,
-    );
-    const occupiedNeeded = Math.max(0, totalCapacity - availableCount);
+    const reportedAvailable = Math.max(0, showtime.availableSeats ?? 0);
 
-    // Collect all seats with their initial metadata
     interface RawSeatItem {
       id: string;
       rowLabel: string;
       number: number;
+      column: number;
       label: string;
       category: SeatCategory;
       price: number;
       section?: string;
     }
 
-    const allSeats: RawSeatItem[] = [];
     const seatsByRow = new Map<string, RawSeatItem[]>();
+    let layoutSeatCount = 0;
 
     for (const section of rawMap.sections || []) {
       for (const row of section.rows || []) {
@@ -407,119 +406,70 @@ export class StarCineplexAdapter extends CinemaAdapter {
             id: `${rowLabel}-${s.label}`,
             rowLabel,
             number: seatNumber,
+            column: Number.isFinite(s.column) ? s.column : seatNumber,
             label: s.label,
             category: seatCategory,
             price: showtime.price,
             section: section.name || undefined,
           };
           rowItems.push(item);
-          allSeats.push(item);
+          layoutSeatCount++;
         }
 
-        rowItems.sort((a, b) => a.number - b.number);
         const existing = seatsByRow.get(rowLabel) || [];
         seatsByRow.set(rowLabel, [...existing, ...rowItems]);
       }
     }
 
-    // Determine occupied seat IDs in realistic clusters (2 to 4 seats)
-    // Real audience fills back rows first (P, N, M, L, K, J, etc.) and leaves front/middle rows (B, C, D, E, F) open.
-    const occupiedSeatIds = new Set<string>();
-    const seed = this.hashString(showtime.id);
-    let rngStep = 0;
+    const totalCapacity = showtime.totalSeats || layoutSeatCount || 100;
+    const availableCount = Math.min(reportedAvailable, totalCapacity);
+    const showHasOpenSeats = availableCount > 0;
 
-    if (occupiedNeeded > 0) {
-      // Prioritize rows from back to front
-      const sortedRowLabels = Array.from(seatsByRow.keys()).sort((a, b) => {
-        const getPriority = (r: string) => {
-          const clean = r.toUpperCase().trim();
-          // Rows B-F are prioritized for our users, so we book them last in the cinema
-          if (["B", "C", "D", "E", "F"].includes(clean))
-            return 100 - clean.charCodeAt(0);
-          // Row A (very front) is undesirable
-          if (clean === "A") return 20;
-          // Back rows have highest booking priority
-          return 10 + clean.charCodeAt(0) * -1;
-        };
-        return getPriority(a) - getPriority(b);
-      });
-
-      let remainingToOccupy = occupiedNeeded;
-
-      // First pass: book clusters of 2-4 seats starting from back rows
-      for (const rowLabel of sortedRowLabels) {
-        if (remainingToOccupy <= 0) break;
-        const rSeats = seatsByRow.get(rowLabel) || [];
-        if (rSeats.length === 0) continue;
-
-        const maxClusters = Math.ceil(rSeats.length / 4);
-        for (let c = 0; c < maxClusters && remainingToOccupy > 0; c++) {
-          const clusterSize = Math.min(
-            remainingToOccupy,
-            2 + Math.floor(this.seededRandom(seed, rngStep++) * 3), // 2 to 4 seats
-          );
-
-          const maxStart = Math.max(0, rSeats.length - clusterSize);
-          const startIdx = Math.floor(
-            this.seededRandom(seed, rngStep++) * (maxStart + 1),
-          );
-
-          for (let i = 0; i < clusterSize && remainingToOccupy > 0; i++) {
-            const seat = rSeats[startIdx + i];
-            if (seat && !occupiedSeatIds.has(seat.id)) {
-              occupiedSeatIds.add(seat.id);
-              remainingToOccupy--;
-            }
-          }
-        }
-      }
-
-      // If still need to occupy, fill remaining seats
-      if (remainingToOccupy > 0) {
-        for (const seat of allSeats) {
-          if (remainingToOccupy <= 0) break;
-          if (!occupiedSeatIds.has(seat.id)) {
-            occupiedSeatIds.add(seat.id);
-            remainingToOccupy--;
-          }
-        }
-      }
-    }
-
-    // Now build normalized rows
     for (const [rowLabel, rItems] of seatsByRow.entries()) {
-      const rowSeats: Seat[] = rItems.map((item) => ({
+      // Order seats physically by column (falling back to seat number)
+      const ordered = [...rItems].sort(
+        (a, b) => a.column - b.column || a.number - b.number,
+      );
+
+      const rowSeats: Seat[] = ordered.map((item) => ({
         id: item.id,
         row: item.rowLabel,
         number: item.number,
         label: item.label,
-        status: occupiedSeatIds.has(item.id) ? "occupied" : "available",
+        status: showHasOpenSeats ? "available" : "occupied",
         category: item.category,
         price: item.price,
         section: item.section,
       }));
 
-      // Sort by seat number
-      rowSeats.sort((a, b) => a.number - b.number);
-
-      // Populate adjacentSeatIds based on contiguous seat numbers
+      // Populate adjacentSeatIds using real physical layout evidence:
+      // same section, adjacent columns (no aisle gap), and consecutive numbering.
       for (let i = 0; i < rowSeats.length; i++) {
         const adj: string[] = [];
-        if (i > 0 && rowSeats[i].number - rowSeats[i - 1].number === 1) {
-          adj.push(rowSeats[i - 1].id);
+        if (i > 0) {
+          const prev = ordered[i - 1];
+          const curr = ordered[i];
+          const sameSection = prev.section === curr.section;
+          const colGap = Math.abs(curr.column - prev.column);
+          const numGap = Math.abs(curr.number - prev.number);
+          if (sameSection && colGap === 1 && numGap === 1) {
+            adj.push(rowSeats[i - 1].id);
+          }
         }
-        if (
-          i < rowSeats.length - 1 &&
-          rowSeats[i + 1].number - rowSeats[i].number === 1
-        ) {
-          adj.push(rowSeats[i + 1].id);
+        if (i < rowSeats.length - 1) {
+          const curr = ordered[i];
+          const next = ordered[i + 1];
+          const sameSection = curr.section === next.section;
+          const colGap = Math.abs(next.column - curr.column);
+          const numGap = Math.abs(next.number - curr.number);
+          if (sameSection && colGap === 1 && numGap === 1) {
+            adj.push(rowSeats[i + 1].id);
+          }
         }
         rowSeats[i].adjacentSeatIds = adj;
       }
 
-      // Store or merge row
-      const existing = rowsMap.get(rowLabel) || [];
-      rowsMap.set(rowLabel, [...existing, ...rowSeats]);
+      rowsMap.set(rowLabel, rowSeats);
     }
 
     return {
@@ -537,29 +487,14 @@ export class StarCineplexAdapter extends CinemaAdapter {
   }
 
   /**
-   * Deterministic seed helper
-   */
-  private hashString(str: string): number {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-      hash = (hash << 5) - hash + str.charCodeAt(i);
-      hash |= 0;
-    }
-    return Math.abs(hash);
-  }
-
-  private seededRandom(seed: number, index: number): number {
-    const x = Math.sin(seed + index) * 10000;
-    return x - Math.floor(x);
-  }
-
-  /**
-   * Fallback synthetic seat map if API endpoint fails
+   * Fallback seat map if hall layout endpoint fails
    */
   private generateFallbackSeatMap(showtime: Showtime): SeatMap {
     const rows = ["A", "B", "C", "D", "E", "F", "G", "H", "J", "K"];
     const rowsMap = new Map<string, Seat[]>();
     const seatsPerRow = 16;
+    const reportedAvailable = Math.max(0, showtime.availableSeats ?? 0);
+    const status = reportedAvailable > 0 ? "available" : "occupied";
 
     rows.forEach((row) => {
       const rowSeats: Seat[] = [];
@@ -569,7 +504,7 @@ export class StarCineplexAdapter extends CinemaAdapter {
           row,
           number: num,
           label: `${row}${num}`,
-          status: "available",
+          status,
           category: row >= "H" ? "premium" : "regular",
           price: showtime.price,
         });
@@ -577,6 +512,7 @@ export class StarCineplexAdapter extends CinemaAdapter {
       rowsMap.set(row, rowSeats);
     });
 
+    const total = showtime.totalSeats || rows.length * seatsPerRow;
     return {
       cinemaId: showtime.cinema.id,
       movieId: showtime.movie.id,
@@ -585,8 +521,8 @@ export class StarCineplexAdapter extends CinemaAdapter {
       blocks: [],
       hallName: showtime.hall.name,
       screenType: showtime.screenType,
-      totalSeats: rows.length * seatsPerRow,
-      availableSeats: showtime.availableSeats || rows.length * seatsPerRow,
+      totalSeats: total,
+      availableSeats: Math.min(reportedAvailable, total),
       fetchedAt: new Date(),
     };
   }
@@ -614,7 +550,7 @@ export class StarCineplexAdapter extends CinemaAdapter {
   /**
    * Proceed to checkout
    */
-  async checkout(showtime: Showtime): Promise<BookingResult> {
+  async checkout(_showtime: Showtime): Promise<BookingResult> {
     return {
       success: true,
       redirectUrl: "https://starcineplex.com/checkout",
@@ -667,7 +603,8 @@ export class StarCineplexAdapter extends CinemaAdapter {
       console.warn("[StarCineplexAdapter] Recheck error:", err);
     }
 
-    return { available: true, remainingSeats: requiredSeats };
+    // Fail closed when availability cannot be verified.
+    return { available: false, remainingSeats: 0 };
   }
 
   /**

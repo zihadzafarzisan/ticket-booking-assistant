@@ -6,6 +6,7 @@ import {
   fulfillRequiredSeats,
   createCompositeSeatBlock,
   createSeatBlock,
+  calculateRowPositionScore,
   rankResults,
   matchesLocation,
   getTimeSlot,
@@ -43,10 +44,12 @@ export class DiscoveryService {
       (movie) => !input.targetMovieId || movie.id === input.targetMovieId,
     );
     signal.throwIfAborted();
-    if (!movies.length)
+    if (!movies.length) {
+      if (input.mode === "monitor") return [];
       throw new Error(
         `No catalog match for “${input.movieName}”. Check the movie name and cinema connection.`,
       );
+    }
     const shows = (
       await Promise.all(
         movies.slice(0, 8).map((movie) =>
@@ -89,7 +92,8 @@ export class DiscoveryService {
             input.preferredTimes.includes(getTimeSlot(show.time))),
       )
       .sort((a, b) => a.time.localeCompare(b.time));
-    const candidates: Candidate[] = [];
+    const rawPairs: Array<{ showtime: (typeof filtered)[number]; seatBlock: SeatBlock }> =
+      [];
     // Bounded concurrency prevents catalog searches from flooding inventory endpoints.
     const queue = filtered.slice(0, 36);
     for (let index = 0; index < queue.length; index += 4) {
@@ -99,27 +103,25 @@ export class DiscoveryService {
           const map = await adapter.getSeatMap(showtime);
           signal.throwIfAborted();
           const blocks = eligibleBlocks(map, input);
-          return rankResults(
-            blocks.map((seatBlock) => ({ showtime, seatBlock })),
-            undefined,
-            {
-              preferredTimes: input.preferredTimes,
-              allowedRows: input.allowedRows,
-              preferredLocationIds: input.locationIds,
-            },
-          ).map((result) => ({
-            ...result,
-            key: `${showtime.id}:${result.seatBlock.id}`,
-            seatLabels: selectOptimalSeats(
-              result.seatBlock,
-              input.requiredSeats,
-            ).map((s) => s.label),
-            simulated: input.source === "demo",
-          }));
+          return blocks.map((seatBlock) => ({ showtime, seatBlock }));
         }),
       );
-      candidates.push(...batch.flat());
+      rawPairs.push(...batch.flat());
     }
+    // Rank across all matching showtimes together so price and format scores normalize fairly.
+    const candidates: Candidate[] = rankResults(rawPairs, undefined, {
+      preferredTimes: input.preferredTimes,
+      allowedRows: input.allowedRows,
+      preferredLocationIds: input.locationIds,
+    }).map((result) => ({
+      ...result,
+      key: `${result.showtime.id}:${result.seatBlock.id}`,
+      seatLabels: selectOptimalSeats(
+        result.seatBlock,
+        input.requiredSeats,
+      ).map((s) => s.label),
+      simulated: input.source === "demo",
+    }));
     return candidates
       .sort((a, b) => {
         if (
@@ -168,8 +170,15 @@ export function eligibleBlocks(map: SeatMap, input: TaskInput) {
   }
   if (input.rowPreference === "front")
     sufficient.sort((a, b) => a.row.localeCompare(b.row));
-  if (input.rowPreference === "back")
+  else if (input.rowPreference === "back")
     sufficient.sort((a, b) => b.row.localeCompare(a.row));
+  else
+    sufficient.sort(
+      (a, b) =>
+        calculateRowPositionScore(b.row) - calculateRowPositionScore(a.row) ||
+        b.centerScore - a.centerScore ||
+        b.capacity - a.capacity,
+    );
   return sufficient;
 }
 
@@ -199,8 +208,12 @@ function honorKnownBoundaries(
     run.push(seat);
   }
   if (run.length) runs.push(run);
+  const numbers = block.seats.map((s) => s.number);
+  const rowBounds = numbers.length
+    ? { min: Math.min(...numbers), max: Math.max(...numbers) }
+    : undefined;
   return runs.map((seats) => ({
-    ...createSeatBlock(block.row, seats, block.section),
+    ...createSeatBlock(block.row, seats, block.section, rowBounds),
     meetsRequirement: seats.length >= requiredSeats,
   }));
 }

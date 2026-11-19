@@ -162,3 +162,27 @@ it("explains date, location and time blockers separately", async () => {
     "Showtime preferences exclude every show",
   );
 });
+it("classifies movies with open online shows as showing even if catalog isUpcoming stays true", async () => {
+  const { fixture, inventory } = await fixtureData();
+  const upcomingShow = fixture.shows.find((show) => show.id === "show-later")!;
+  // Scheduled (not open) stays upcoming
+  expect(
+    movieCatalogState(
+      inventory.snapshot().movies.find((m) => m.id === "movie-upcoming")!,
+      inventory.snapshot().shows,
+      "2099-11-30",
+    ),
+  ).toBe("upcoming");
+  // Once online sales open, it must appear under Now showing
+  upcomingShow.status = "Selling";
+  await inventory.refresh();
+  const data = inventory.snapshot();
+  expect(
+    movieCatalogState(
+      data.movies.find((m) => m.id === "movie-upcoming")!,
+      data.shows,
+      "2099-11-30",
+    ),
+  ).toBe("showing");
+  expect(data.counts.nowShowingMovies).toBe(2);
+});

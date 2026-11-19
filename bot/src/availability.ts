@@ -7,14 +7,19 @@ export function movieCatalogState(
   shows: LiveShow[],
   today: string,
 ): "showing" | "upcoming" | "unpublished" {
-  const published = shows.some(
+  const futureShows = shows.filter(
     (show) =>
       show.movie.id === movie.id &&
       show.date >= today &&
       show.ticketStatus !== "started" &&
       show.branchActive,
   );
-  if (published && (movie.isNowShowing || !movie.isUpcoming)) return "showing";
+  const hasOpenSales = futureShows.some((show) => show.ticketStatus === "open");
+  if (
+    hasOpenSales ||
+    (futureShows.length > 0 && (movie.isNowShowing || !movie.isUpcoming))
+  )
+    return "showing";
   if (movie.isUpcoming || (movie.releaseDate?.slice(0, 10) || "") > today)
     return "upcoming";
   return "unpublished";

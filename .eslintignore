@@ -1,0 +1,8 @@
+node_modules/
+**/dist/
+.bot-data/
+.bot-test-data/
+test-results/
+playwright-report/
+coverage/
+extension/

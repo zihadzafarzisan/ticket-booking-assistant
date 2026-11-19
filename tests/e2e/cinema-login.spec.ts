@@ -187,3 +187,73 @@ test("an unsuccessful password is submitted only once and never reported as paym
   ).toContain("not completed");
   expect(submissions).toBe(1);
 });
+
+test("waits for SPA login hydration after checkout redirect and flags passwordless login pages", async ({
+  page,
+  context,
+}) => {
+  await context.route("https://starcineplex.com/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/session") {
+      await route.fulfill({ json: { ok: true } });
+      return;
+    }
+    const body =
+      path === "/checkout"
+        ? "<h1>Payment fixture</h1>"
+        : path === "/login"
+          ? `<div id="app">Loading…</div><script>setTimeout(()=>{document.querySelector('#app').innerHTML=${JSON.stringify(login("/checkout"))};},300);</script>`
+          : seats("/login");
+    await route.fulfill({ contentType: "text/html", body });
+  });
+  await page.goto(show.bookingUrl);
+  const driver = new BrowserDriver(".bot-test-data/unused", true, {
+    credentials: { get: () => credentials } as CredentialStore,
+  });
+  Object.assign(driver, {
+    context,
+    pages: new Map([["fixture:login-fixture", page]]),
+  });
+  const result = await driver.reserve(
+    "fixture",
+    show,
+    task(),
+    new AbortController().signal,
+  );
+  expect(result.status).toBe("awaiting_payment");
+  expect(page.url()).toContain("/checkout");
+
+  await context.unroute("https://starcineplex.com/**");
+  await context.route("https://starcineplex.com/**", (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: '<form><label>Phone<input type="tel" name="phone"></label><button>Send code</button></form>',
+    }),
+  );
+  await page.goto("https://starcineplex.com/login?returnTo=%2Fshows%2F1%2Fseats");
+  const manual = await handleCinemaLogin(
+    page,
+    credentials,
+    { submitted: false },
+    new AbortController().signal,
+  );
+  expect(manual).toContain("requires login");
+
+  // Cloudflare Turnstile widget on /login must be flagged as CAPTCHA without submitting credentials
+  await context.unroute("https://starcineplex.com/**");
+  await context.route("https://starcineplex.com/**", (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: '<form><input type="email" name="email"><input type="password" name="password"><div role="group" aria-label="Quick check that you are a person"><input type="hidden" name="cf-turnstile-response" value=""></div><button type="submit">Sign in</button></form>',
+    }),
+  );
+  await page.goto("https://starcineplex.com/login");
+  const turnstile = await handleCinemaLogin(
+    page,
+    credentials,
+    { submitted: false },
+    new AbortController().signal,
+  );
+  expect(turnstile).toContain("OTP or CAPTCHA");
+  expect(await page.locator('input[type="password"]').inputValue()).toBe("");
+});

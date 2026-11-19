@@ -249,19 +249,43 @@ export class BrowserConnection {
         : []),
       "about:blank",
     ];
-    const child = spawn(executable, args, {
-      detached: true,
-      stdio: "ignore",
-      windowsHide: false,
-    });
+    let child;
+    if (process.platform === "win32" && !this.launchOptions.headless) {
+      // Use `cmd.exe /c start` so Windows opens a real visible desktop window in <1s
+      // even when Cinebot itself was launched from a hidden background process.
+      const argLine = args
+        .map((arg) => {
+          if (!/\s/.test(arg)) return arg;
+          const eq = arg.indexOf("=");
+          if (eq > 0 && arg.startsWith("--"))
+            return `${arg.slice(0, eq + 1)}"${arg.slice(eq + 1)}"`;
+          return `"${arg}"`;
+        })
+        .join(" ");
+      const cmdLine = `start "" "${executable}" ${argLine}`;
+      child = spawn("cmd.exe", ["/d", "/s", "/c", `"${cmdLine}"`], {
+        detached: true,
+        stdio: "ignore",
+        windowsHide: true,
+        windowsVerbatimArguments: true,
+      });
+    } else {
+      child = spawn(executable, args, {
+        detached: true,
+        stdio: "ignore",
+        windowsHide: false,
+      });
+    }
     let launchError = false;
     let exitCode: number | null | undefined;
     child.once("error", () => {
       launchError = true;
     });
-    child.once("exit", (code) => {
-      exitCode = code;
-    });
+    if (process.platform !== "win32" || this.launchOptions.headless) {
+      child.once("exit", (code) => {
+        exitCode = code;
+      });
+    }
     child.unref();
     for (let attempt = 0; attempt < 40 && !launchError; attempt++) {
       try {

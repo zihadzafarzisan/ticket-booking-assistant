@@ -46,7 +46,7 @@ test("catalog flags without shows are not advertised as running; the watch task 
     }),
   ).toBeVisible();
   await expect(
-    page.getByText(/There is no seat page to open yet/),
+    page.locator(".waiting-state").getByText(/There is no seat page to open yet/),
   ).toBeVisible();
   await page.screenshot({
     path: "test-results/unpublished-mission.png",

@@ -94,6 +94,7 @@ export function createSeatBlock(
   row: string,
   seats: Seat[],
   section?: string,
+  rowBounds?: { min: number; max: number },
 ): SeatBlock {
   const sortedSeats = [...seats].sort((a, b) => a.number - b.number);
   const capacity = sortedSeats.length;
@@ -101,12 +102,17 @@ export function createSeatBlock(
     (s) => s.status === "available",
   ).length;
 
-  // Calculate center score (how centered is this block in the row)
-  const rowSeatCount = sortedSeats.length;
-  const centerPosition = (rowSeatCount + 1) / 2;
+  // Calculate center score (0-1) using full row bounds when available.
+  const minSeat = rowBounds ? rowBounds.min : Math.min(1, sortedSeats[0].number);
+  const maxSeat = rowBounds
+    ? rowBounds.max
+    : Math.max(sortedSeats[capacity - 1].number, sortedSeats.length);
+  const rowCenter = (minSeat + maxSeat) / 2;
+  const halfSpan = Math.max(1, (maxSeat - minSeat + 1) / 2);
   const blockCenter =
     (sortedSeats[0].number + sortedSeats[capacity - 1].number) / 2;
-  const centerScore = 1 - Math.abs(centerPosition - blockCenter) / rowSeatCount;
+  const rawCenterScore = 1 - Math.abs(rowCenter - blockCenter) / halfSpan;
+  const centerScore = Math.max(0, Math.min(1, rawCenterScore));
 
   return {
     id: `${row}-${sortedSeats[0].number}-${sortedSeats[capacity - 1].number}`,

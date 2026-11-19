@@ -9,7 +9,6 @@ import {
   Seat,
   SeatBlock,
   SeatMap,
-  SeatStatus,
   createSeatBlock,
 } from "../../types/seat";
 import {
@@ -84,6 +83,10 @@ function detectRowBlocks(
 
   // Sort seats by number
   const sortedSeats = [...seats].sort((a, b) => a.number - b.number);
+  const rowBounds = {
+    min: sortedSeats[0].number,
+    max: sortedSeats[sortedSeats.length - 1].number,
+  };
 
   const blocks: SeatBlock[] = [];
   let currentBlock: Seat[] = [];
@@ -95,7 +98,7 @@ function detectRowBlocks(
     if (!isAvailable(seat, config)) {
       // If we have a current block, finalize it
       if (currentBlock.length > 0) {
-        const block = createSeatBlock(rowLabel, currentBlock);
+        const block = createSeatBlock(rowLabel, currentBlock, undefined, rowBounds);
         block.meetsRequirement = block.capacity >= config.requiredSeats;
         blocks.push(block);
         currentBlock = [];
@@ -109,7 +112,7 @@ function detectRowBlocks(
 
       if (!isContiguous(prevSeat, seat, config)) {
         // Gap detected - finalize current block and start new one
-        const block = createSeatBlock(rowLabel, currentBlock);
+        const block = createSeatBlock(rowLabel, currentBlock, undefined, rowBounds);
         block.meetsRequirement = block.capacity >= config.requiredSeats;
         blocks.push(block);
         currentBlock = [];
@@ -121,7 +124,7 @@ function detectRowBlocks(
 
   // Don't forget the last block
   if (currentBlock.length > 0) {
-    const block = createSeatBlock(rowLabel, currentBlock);
+    const block = createSeatBlock(rowLabel, currentBlock, undefined, rowBounds);
     block.meetsRequirement = block.capacity >= config.requiredSeats;
     blocks.push(block);
   }
@@ -159,16 +162,29 @@ function isContiguous(
   seat2: Seat,
   config: BlockDetectionConfig,
 ): boolean {
-  // If seats have explicit adjacency data, use it
-  if (seat1.adjacentSeatIds?.includes(seat2.id)) {
-    return true;
+  if (seat1.aisle || seat2.aisle || seat1.section !== seat2.section) {
+    return false;
+  }
+
+  // If seats have explicit adjacency data, honor it strictly
+  if (
+    seat1.adjacentSeatIds !== undefined ||
+    seat2.adjacentSeatIds !== undefined
+  ) {
+    const leftOk =
+      seat1.adjacentSeatIds === undefined ||
+      seat1.adjacentSeatIds.includes(seat2.id);
+    const rightOk =
+      seat2.adjacentSeatIds === undefined ||
+      seat2.adjacentSeatIds.includes(seat1.id);
+    return leftOk && rightOk;
   }
 
   // Check numeric adjacency with optional gap tolerance
   const numericGap = seat2.number - seat1.number;
 
   if (numericGap === 1) {
-    // Consecutive numbers - definitely adjacent
+    // Consecutive numbers - adjacent
     return true;
   }
 
@@ -363,7 +379,7 @@ export function createCompositeSeatBlock(
     endSeat: sortedSeats[sortedSeats.length - 1]?.label || "",
     capacity,
     availableCount,
-    centerScore: 0.88,
+    centerScore: 0.5,
     meetsRequirement: capacity >= requiredCount,
   };
 }

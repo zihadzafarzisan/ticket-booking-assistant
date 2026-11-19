@@ -5,7 +5,7 @@
  * Each adapter handles a specific cinema chain/website.
  */
 
-import { Movie, Cinema, Showtime, ShowtimeFilters } from "../types/cinema";
+import { Movie, Showtime, ShowtimeFilters } from "../types/cinema";
 import { SeatMap } from "../types/seat";
 
 export interface AdapterConfig {

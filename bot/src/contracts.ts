@@ -85,6 +85,7 @@ export interface Snapshot {
   browser: BrowserStatus;
   startedAt: string;
   version: string;
+  seq?: number;
 }
 
 export function validateTask(value: unknown): TaskInput {
@@ -121,13 +122,13 @@ export function validateTask(value: unknown): TaskInput {
   )
     throw new Error("Choose between 1 and 50 seats.");
   const intervalSeconds =
-    v.intervalSeconds === undefined ? 5 : Number(v.intervalSeconds);
+    v.intervalSeconds === undefined ? 1 : Number(v.intervalSeconds);
   if (
     !Number.isFinite(intervalSeconds) ||
-    intervalSeconds < 2 ||
+    intervalSeconds < 1 ||
     intervalSeconds > 300
   )
-    throw new Error("Polling interval must be between 2 and 300 seconds.");
+    throw new Error("Polling interval must be between 1 and 300 seconds.");
   const choices = <T extends string>(
     key: string,
     list: readonly T[],

@@ -94,6 +94,24 @@ export class BrowserDriver implements BrowserPort {
       this.launching = undefined;
     }
   }
+  private async raiseWindow(page: Page) {
+    await page.bringToFront().catch(() => {});
+    if (this.headless) return;
+    try {
+      const cdp = await page.context().newCDPSession(page);
+      const { windowId } = (await cdp.send("Browser.getWindowForTarget")) as {
+        windowId: number;
+      };
+      await cdp
+        .send("Browser.setWindowBounds", {
+          windowId,
+          bounds: { windowState: "normal" },
+        })
+        .catch(() => {});
+      await cdp.detach().catch(() => {});
+    } catch {}
+    await page.bringToFront().catch(() => {});
+  }
   async openSession(connectOnly = false) {
     const context = await this.ensureContext(connectOnly);
     let page = context.pages().find((p) => isCinemaUrl(p.url()));
@@ -104,12 +122,12 @@ export class BrowserDriver implements BrowserPort {
         timeout: 30_000,
       });
     }
-    await page.bringToFront();
+    await this.raiseWindow(page);
   }
   async focus(taskId: string, show: Showtime) {
     const page = this.pages.get(`${taskId}:${show.id}`);
     if (page && !page.isClosed()) {
-      await page.bringToFront();
+      await this.raiseWindow(page);
       return;
     }
     const context = await this.ensureContext();
@@ -119,7 +137,7 @@ export class BrowserDriver implements BrowserPort {
       waitUntil: "domcontentloaded",
       timeout: 30_000,
     });
-    await opened.bringToFront();
+    await this.raiseWindow(opened);
   }
   reserve(
     taskId: string,
@@ -152,7 +170,7 @@ export class BrowserDriver implements BrowserPort {
       !page.isClosed() &&
       previous?.input === JSON.stringify(input) &&
       (isPaymentGatewayUrl(page.url()) ||
-        /\/(checkout|payment|login)(\/|\?|$)/.test(
+        /\/(checkout|payment)(\/|\?|$)/.test(
           new URL(page.url()).pathname,
         ))
     ) {
@@ -265,7 +283,12 @@ export class BrowserDriver implements BrowserPort {
       availableSeats: liveSeats.filter((s) => s.status === "available").length,
       fetchedAt: new Date(),
     };
-    const blocks = eligibleBlocks(map, { ...input, allowedRows: [] });
+    const domHasCategories = liveSeats.some((seat) => !!seat.category);
+    const blocks = eligibleBlocks(map, {
+      ...input,
+      allowedRows: [],
+      preferredCategory: domHasCategories ? input.preferredCategory : "any",
+    });
     const selected = blocks.length
       ? selectOptimalSeats(blocks[0], input.requiredSeats)
       : [];
@@ -280,38 +303,55 @@ export class BrowserDriver implements BrowserPort {
       return userHandoff(
         "Other seats are already selected on this page. Review or clear them in the browser, then retry selection.",
       );
+    await dismissFloatingBanners(page);
     const labels: string[] = [];
+    const waitSelected = (token: string, timeout: number) =>
+      page
+        .waitForFunction(
+          (id) => {
+            const el = document.querySelector(`[data-ticket-bot-seat="${id}"]`);
+            return (
+              !!el &&
+              (el.getAttribute("aria-selected") === "true" ||
+                el.getAttribute("aria-checked") === "true" ||
+                el.getAttribute("aria-pressed") === "true" ||
+                el.getAttribute("data-seat-state") === "selected" ||
+                el.getAttribute("data-seat-status") === "selected" ||
+                el.getAttribute("data-state") === "selected" ||
+                el.getAttribute("data-selected") === "true" ||
+                el.classList.contains("selected") ||
+                el.classList.contains("is-selected"))
+            );
+          },
+          token,
+          { timeout },
+        )
+        .catch(() => {});
     for (const seat of selected) {
       signal.throwIfAborted();
       const element = page.locator(`[data-ticket-bot-seat="${seat.id}"]`);
-      const accepted = await element.evaluate(isSeatSelected);
+      let accepted = await element.evaluate(isSeatSelected);
       if (!accepted) {
         signal.throwIfAborted();
         await element.click({ timeout: 5000 });
-        await page
-          .waitForFunction(
-            (token) => {
-              const el = document.querySelector(
-                `[data-ticket-bot-seat="${token}"]`,
-              );
-              return (
-                !!el &&
-                (el.getAttribute("aria-selected") === "true" ||
-                  el.getAttribute("aria-checked") === "true" ||
-                  el.getAttribute("aria-pressed") === "true" ||
-                  el.getAttribute("data-seat-state") === "selected" ||
-                  el.getAttribute("data-selected") === "true" ||
-                  el.classList.contains("selected") ||
-                  el.classList.contains("is-selected"))
-              );
-            },
-            seat.id,
-            { timeout: 2500 },
-          )
-          .catch(() => {});
+        await waitSelected(seat.id, 1200);
+        accepted = await element.evaluate(isSeatSelected);
+      }
+      if (!accepted) {
+        signal.throwIfAborted();
+        const stillAvailable = await element.evaluate(
+          (el) =>
+            !el.hasAttribute("disabled") &&
+            el.getAttribute("aria-disabled") !== "true",
+        );
+        if (stillAvailable) {
+          await element.click({ timeout: 5000 });
+          await waitSelected(seat.id, 1200);
+          accepted = await element.evaluate(isSeatSelected);
+        }
       }
       signal.throwIfAborted();
-      if (!(await element.evaluate(isSeatSelected)))
+      if (!accepted)
         return userHandoff(
           `Could not verify ${seat.label}. Please check the browser before continuing.`,
           labels,
@@ -333,7 +373,7 @@ export class BrowserDriver implements BrowserPort {
     signal.throwIfAborted();
     const checkout = page
       .getByRole("button", {
-        name: /^(proceed to checkout|proceed|continue|buy tickets|next)(\b|$)/i,
+        name: /^(proceed to checkout|proceed to pay|proceed|continue|confirm seats?|confirm booking|book now|buy tickets?|checkout|review order|next)(\b|$)/i,
       })
       .filter({ visible: true })
       .first();
@@ -343,7 +383,17 @@ export class BrowserDriver implements BrowserPort {
     });
     if ((await checkout.count()) && (await checkout.isEnabled())) {
       signal.throwIfAborted();
-      await checkout.click({ timeout: 5000 });
+      await dismissFloatingBanners(page);
+      signal.throwIfAborted();
+      try {
+        await checkout.click({ timeout: 4000 });
+      } catch (clickError) {
+        signal.throwIfAborted();
+        if (!/intercepts pointer events/i.test((clickError as Error).message))
+          throw clickError;
+        await dismissFloatingBanners(page);
+        await checkout.evaluate((el) => (el as HTMLElement).click());
+      }
       // Login can appear as a dialog or a redirect only after seats are selected.
       await page.waitForLoadState("domcontentloaded").catch(() => {});
       await Promise.race([
@@ -381,7 +431,17 @@ export class BrowserDriver implements BrowserPort {
           (await checkout.isEnabled())
         ) {
           signal.throwIfAborted();
-          await checkout.click({ timeout: 5000 });
+          await dismissFloatingBanners(page);
+          try {
+            await checkout.click({ timeout: 4000 });
+          } catch (clickError) {
+            signal.throwIfAborted();
+            if (
+              !/intercepts pointer events/i.test((clickError as Error).message)
+            )
+              throw clickError;
+            await checkout.evaluate((el) => (el as HTMLElement).click());
+          }
         }
       }
       await page
@@ -435,7 +495,7 @@ export class BrowserDriver implements BrowserPort {
       signal,
     );
     this.pages.set(key, result.page);
-    await result.page.bringToFront();
+    await this.raiseWindow(result.page);
     return {
       status: result.ready ? "awaiting_payment" : "awaiting_user",
       url: result.page.url(),
@@ -461,12 +521,32 @@ export class BrowserDriver implements BrowserPort {
   }
 }
 
+export async function dismissFloatingBanners(page: Page) {
+  const banner = page
+    .locator(
+      '[role="region"][aria-label*="Install" i], [role="dialog"][aria-label*="Install" i]',
+    )
+    .filter({ visible: true });
+  if (!(await banner.count())) return;
+  const close = banner
+    .locator(
+      'button[aria-label*="close" i], button[aria-label*="dismiss" i], button:has-text("Not now"), button:has-text("Later"), button:has-text("Dismiss"), button:has-text("Close"), button:has-text("×")',
+    )
+    .filter({ visible: true })
+    .first();
+  if (await close.count()) {
+    await close.click({ timeout: 1500 }).catch(() => {});
+  }
+}
+
 export function isSeatSelected(el: Element): boolean {
   return (
     el.getAttribute("aria-selected") === "true" ||
     el.getAttribute("aria-checked") === "true" ||
     el.getAttribute("aria-pressed") === "true" ||
     el.getAttribute("data-seat-state") === "selected" ||
+    el.getAttribute("data-seat-status") === "selected" ||
+    el.getAttribute("data-state") === "selected" ||
     el.getAttribute("data-selected") === "true" ||
     el.classList.contains("selected") ||
     el.classList.contains("is-selected")
@@ -547,6 +627,8 @@ export function readLiveSeats() {
         el.getAttribute("aria-checked") === "true" ||
         el.getAttribute("aria-pressed") === "true" ||
         el.getAttribute("data-seat-state") === "selected" ||
+        el.getAttribute("data-seat-status") === "selected" ||
+        el.getAttribute("data-state") === "selected" ||
         el.getAttribute("data-selected") === "true" ||
         el.classList.contains("selected") ||
         el.classList.contains("is-selected"),

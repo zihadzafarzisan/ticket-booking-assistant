@@ -153,6 +153,7 @@ export function normalizeRowLabel(row: string): string {
     .trim()
     .toUpperCase()
     .replace(/^ROW\s*/i, "")
+    .replace(/:\d+$/, "")
     .replace(/\d+$/, "");
 }
 

@@ -130,7 +130,7 @@ export default function MovieBooking({
         source: "live",
         autoReserve: true,
         openPaymentGateway: true,
-        intervalSeconds: 30,
+        intervalSeconds: 1,
         allowedRows,
         preferredTimes,
         preferredCategory: "any",
@@ -190,9 +190,16 @@ export default function MovieBooking({
                     show.date >= today(),
                 )
                   ? "No shows announced"
-                  : movie.isUpcoming
-                    ? "Coming soon"
-                    : "Now showing"}
+                  : inventory.shows.some(
+                        (show) =>
+                          show.movie.id === movie.id &&
+                          show.ticketStatus === "open" &&
+                          show.date >= today(),
+                      )
+                    ? "Now showing"
+                    : movie.isUpcoming
+                      ? "Coming soon"
+                      : "Now showing"}
               </strong>
               <p>
                 {movie.formats.join(" · ")}

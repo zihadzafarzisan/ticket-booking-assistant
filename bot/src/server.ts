@@ -129,8 +129,7 @@ export function createBotServer(
           send();
           sendInventory();
           const keepalive = setInterval(() => {
-            send();
-            sendInventory();
+            if (!res.destroyed) res.write(": keepalive\n\n");
           }, 15_000);
           res.on("close", () => {
             clearInterval(keepalive);

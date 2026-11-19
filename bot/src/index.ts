@@ -28,8 +28,20 @@ export async function startBot(
     new CredentialStore(resolve(data, "credentials.json"));
   const browserConnection =
     options.browserConnection || new BrowserConnection(data);
-  await credentials.init();
-  await browserConnection.init();
+  try {
+    await credentials.init();
+  } catch (error) {
+    console.warn(
+      `Warning: ${(error as Error).message} Starting without saved credentials.`,
+    );
+  }
+  try {
+    await browserConnection.init();
+  } catch (error) {
+    console.warn(
+      `Warning: Could not read saved browser settings (${(error as Error).message}). Using default endpoint.`,
+    );
+  }
   const runner = new BotRunner(
     new TaskStore(resolve(data, "tasks.json")),
     new DiscoveryService(new LiveStarCineplexAdapter(inventory)),

@@ -121,16 +121,40 @@ export function ticketStatus(
 }
 
 async function publicFetch(url: string, signal: AbortSignal) {
-  const response = await fetch(url, {
-    signal: AbortSignal.any([signal, AbortSignal.timeout(12_000)]),
-    cache: "no-store",
-    headers: { Accept: "application/json" },
-  });
-  if (!response.ok)
-    throw new Error(
-      `Star Cineplex ${new URL(url).pathname.split("/").at(-1)} request failed (HTTP ${response.status}).`,
-    );
-  return response.json();
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    signal.throwIfAborted();
+    try {
+      const response = await fetch(url, {
+        signal: AbortSignal.any([signal, AbortSignal.timeout(12_000)]),
+        cache: "no-store",
+        headers: { Accept: "application/json" },
+      });
+      if (response.ok) return response.json();
+      const error = new Error(
+        `Star Cineplex ${new URL(url).pathname.split("/").at(-1)} request failed (HTTP ${response.status}).`,
+      );
+      if (response.status < 500 && response.status !== 429) throw error;
+      lastError = error;
+    } catch (error) {
+      if (signal.aborted) throw error;
+      lastError = error;
+    }
+    if (attempt === 0) {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          signal.removeEventListener("abort", onAbort);
+          resolve();
+        }, 400);
+        const onAbort = () => {
+          clearTimeout(timer);
+          reject(signal.reason);
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+      });
+    }
+  }
+  throw lastError;
 }
 
 export class LiveInventoryService {
@@ -234,7 +258,7 @@ export class LiveInventoryService {
     };
     return base;
   }
-  async fresh(maxAgeMs = 1000): Promise<LiveInventory> {
+  async fresh(maxAgeMs = 800): Promise<LiveInventory> {
     if (
       this.data &&
       !this.lastError &&
@@ -418,7 +442,15 @@ export class LiveInventoryService {
           (prices.length ? Math.min(...prices) : undefined);
         const available = seatCount(raw.availableSeats);
         const total = seatCount(raw.totalSeats) ?? 0;
-        const screenType = format(raw.format);
+        const resolvedHallName =
+          names.get(text(raw.hallId)) || `Hall ${text(raw.hallId).slice(0, 8)}`;
+        const rawFormat = format(raw.format);
+        const hallFormat = format(resolvedHallName);
+        const screenType =
+          (rawFormat === "2d" || rawFormat === "standard") &&
+          ["imax", "dolby_atmos", "4dx"].includes(hallFormat)
+            ? hallFormat
+            : rawFormat;
         const show: LiveShow = {
           id: text(raw.id),
           movie,
@@ -431,9 +463,7 @@ export class LiveInventoryService {
           },
           hall: {
             id: text(raw.hallId),
-            name:
-              names.get(text(raw.hallId)) ||
-              `Hall ${text(raw.hallId).slice(0, 8)}`,
+            name: resolvedHallName,
             screenType,
             capacity: total,
           },

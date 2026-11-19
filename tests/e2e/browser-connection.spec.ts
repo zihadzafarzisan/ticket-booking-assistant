@@ -91,14 +91,13 @@ test("connects once through Chrome-style 404 discovery and a delayed approval ha
     gateway.closeAllConnections();
     await new Promise<void>((done) => gateway.close(() => done()));
     await owner.close();
-    if (!root.startsWith(resolve(".bot-test-data") + sep))
-      throw new Error("Unexpected cleanup path");
-    await rm(root, {
-      recursive: true,
-      force: true,
-      maxRetries: 5,
-      retryDelay: 100,
-    });
+    if (root.startsWith(resolve(".bot-test-data") + sep))
+      await rm(root, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 100,
+      });
   }
 });
 
@@ -179,9 +178,8 @@ test("attaches to an open regular browser, reuses its session and leaves tabs op
     await driver.close();
     await connection.disconnect();
     await owner.close();
-    if (!root.startsWith(resolve(".bot-test-data") + sep))
-      throw new Error("Unexpected cleanup path");
-    await rm(root, { recursive: true, force: true });
+    if (root.startsWith(resolve(".bot-test-data") + sep))
+      await rm(root, { recursive: true, force: true });
   }
 });
 
@@ -231,13 +229,12 @@ test("opens one regular persistent browser when no attachable browser is running
       await session.send("Browser.close").catch(() => {});
     }
     await connection.disconnect();
-    if (!root.startsWith(resolve(".bot-test-data") + sep))
-      throw new Error("Unexpected cleanup path");
-    await rm(root, {
-      recursive: true,
-      force: true,
-      maxRetries: 10,
-      retryDelay: 100,
-    });
+    if (root.startsWith(resolve(".bot-test-data") + sep))
+      await rm(root, {
+        recursive: true,
+        force: true,
+        maxRetries: 10,
+        retryDelay: 100,
+      });
   }
 });

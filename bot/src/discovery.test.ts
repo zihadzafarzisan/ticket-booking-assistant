@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { DiscoveryService, eligibleBlocks } from "./discovery";
-import { DemoAdapter, type SeatMap } from "../../packages/core/src";
+import {
+  DemoAdapter,
+  StarCineplexAdapter,
+  detectSeatBlocks,
+  rankResults,
+  type SeatMap,
+  type Showtime,
+} from "../../packages/core/src";
 import { validateTask } from "./contracts";
 const input = () =>
   validateTask({
@@ -163,5 +170,180 @@ describe("standalone discovery", () => {
         keepTogether: false,
       }),
     ).toEqual([]);
+  });
+  it("keeps centerScore in [0, 1] using full row width and ranks cheaper shows higher", () => {
+    const rowSeats = Array.from({ length: 12 }, (_, idx) => ({
+      id: `B${idx + 1}`,
+      row: "B",
+      number: idx + 1,
+      label: `B${idx + 1}`,
+      status:
+        idx + 1 === 6 || idx + 1 === 7 || idx + 1 === 10 || idx + 1 === 11
+          ? ("available" as const)
+          : ("occupied" as const),
+    }));
+    const map: SeatMap = {
+      rows: new Map([["B", rowSeats]]),
+      blocks: [],
+      cinemaId: "demo",
+      movieId: "m",
+      showtimeId: "s",
+      hallName: "Hall",
+      screenType: "standard",
+      totalSeats: 12,
+      availableSeats: 4,
+      fetchedAt: new Date(),
+    };
+    const blocks = detectSeatBlocks(map, { requiredSeats: 2 });
+    expect(blocks).toHaveLength(2);
+    for (const block of blocks) {
+      expect(block.centerScore).toBeGreaterThanOrEqual(0);
+      expect(block.centerScore).toBeLessThanOrEqual(1);
+    }
+    const centerBlock = blocks.find((b) => b.startSeat === "B6")!;
+    const edgeBlock = blocks.find((b) => b.startSeat === "B10")!;
+    expect(centerBlock.centerScore).toBeGreaterThan(edgeBlock.centerScore);
+
+    const baseShow: Showtime = {
+      id: "s1",
+      movie: { id: "m", title: "Film" },
+      cinema: { id: "star-cineplex", name: "Star Cineplex", location: "Dhaka" },
+      hall: { id: "h1", name: "Hall 1", screenType: "2d", capacity: 12 },
+      date: "2099-12-01",
+      time: "18:00",
+      screenType: "2d",
+      price: 500,
+      currency: "BDT",
+      availableSeats: 4,
+      totalSeats: 12,
+      bookingUrl: "https://kichole.com/shows/s1/seats",
+    };
+    const ranked = rankResults([
+      { showtime: { ...baseShow, id: "expensive", price: 1200 }, seatBlock: centerBlock },
+      { showtime: { ...baseShow, id: "cheap", price: 450 }, seatBlock: centerBlock },
+    ]);
+    expect(ranked[0].showtime.id).toBe("cheap");
+    expect(ranked[0].priceScore).toBeGreaterThan(ranked[1].priceScore);
+
+    // Prime center rows (C/D/E) must strictly outscore back rows (M) and front row (A) on open rows
+    const fullRow = (row: string) =>
+      detectSeatBlocks(
+        {
+          ...map,
+          rows: new Map([
+            [
+              row,
+              Array.from({ length: 12 }, (_, idx) => ({
+                id: `${row}${idx + 1}`,
+                row,
+                number: idx + 1,
+                label: `${row}${idx + 1}`,
+                status: "available" as const,
+              })),
+            ],
+          ]),
+        },
+        { requiredSeats: 10 },
+      )[0];
+    const byRow = rankResults(
+      ["M", "A", "G", "B", "D"].map((row) => ({
+        showtime: baseShow,
+        seatBlock: fullRow(row),
+      })),
+    );
+    expect(byRow.map((r) => r.seatBlock.row)).toEqual(["D", "B", "G", "M", "A"]);
+
+    // Live arm-grouped rows (A:0, M:0, D:0) must still pick prime row D first under center preference
+    const armMap: SeatMap = {
+      ...map,
+      rows: new Map(
+        ["A", "M", "D"].map((row) => [
+          `${row}:0`,
+          Array.from({ length: 12 }, (_, idx) => ({
+            id: `${row}${idx + 1}`,
+            row,
+            number: idx + 1,
+            label: `${row}${idx + 1}`,
+            status: "available" as const,
+          })),
+        ]),
+      ),
+    };
+    const chosen = eligibleBlocks(armMap, {
+      ...input(),
+      allowedRows: [],
+      requiredSeats: 10,
+      rowPreference: "center",
+    });
+    expect(chosen[0].row).toBe("D:0");
+  });
+  it("never synthesizes fake occupied seats or fails open in StarCineplexAdapter", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (String(url).includes("/seat-maps/")) {
+        return new Response(
+          JSON.stringify({
+            sections: [
+              {
+                name: "Main",
+                rows: [
+                  {
+                    rowLabel: "J",
+                    seatCount: 4,
+                    startColumn: 1,
+                    rowIndex: 0,
+                    seats: [
+                      { label: "J1", column: 1 },
+                      { label: "J2", column: 2 },
+                      // Aisle gap at column 3
+                      { label: "J3", column: 4 },
+                      { label: "J4", column: 5 },
+                    ],
+                  },
+                ],
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response("Service Unavailable", { status: 503 });
+    });
+    try {
+      const adapter = new StarCineplexAdapter();
+      const show: Showtime = {
+        id: "show-1",
+        movie: { id: "m1", title: "Film" },
+        cinema: { id: "star-cineplex", name: "Star Cineplex", location: "Dhaka" },
+        hall: { id: "h1", name: "Hall 1", screenType: "2d", capacity: 4 },
+        date: "2099-12-01",
+        time: "18:00",
+        screenType: "2d",
+        price: 500,
+        currency: "BDT",
+        availableSeats: 0,
+        totalSeats: 4,
+        seatMapId: "map-j",
+        bookingUrl: "https://kichole.com/shows/show-1/seats",
+      };
+      const soldOut = await adapter.getSeatMap(show);
+      expect(soldOut.availableSeats).toBe(0);
+      expect(
+        soldOut.rows.get("J")?.every((seat) => seat.status === "occupied"),
+      ).toBe(true);
+
+      const open = await adapter.getSeatMap({ ...show, availableSeats: 2 });
+      expect(open.availableSeats).toBe(2);
+      const jSeats = open.rows.get("J")!;
+      expect(jSeats.every((seat) => seat.status === "available")).toBe(true);
+      // Column gap between J2 (col 2) and J3 (col 4) must split blocks
+      const blocks = detectSeatBlocks(open, { requiredSeats: 2 });
+      expect(blocks).toHaveLength(2);
+      expect(blocks.map((b) => b.startSeat).sort()).toEqual(["J1", "J3"]);
+
+      const recheck = await adapter.recheckAvailability("show-1", 2);
+      expect(recheck).toEqual({ available: false, remainingSeats: 0 });
+    } finally {
+      fetchMock.mockRestore();
+    }
   });
 });

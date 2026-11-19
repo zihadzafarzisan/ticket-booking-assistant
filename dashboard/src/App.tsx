@@ -156,6 +156,17 @@ export default function App() {
     () => localStorage.getItem("cinebot:sound") === "1",
   );
   const notified = useRef(new Set<string>());
+  const latestSnapshot = useRef({ startedAt: "", seq: -1 });
+  const applySnapshot = (value: Snapshot) => {
+    const seq = value.seq ?? 0;
+    if (
+      value.startedAt === latestSnapshot.current.startedAt &&
+      seq < latestSnapshot.current.seq
+    )
+      return;
+    latestSnapshot.current = { startedAt: value.startedAt, seq };
+    setSnapshot(value);
+  };
   const soundRef = useRef(sound);
   soundRef.current = sound;
   const [clock, setClock] = useState(Date.now());
@@ -173,7 +184,7 @@ export default function App() {
     api<Snapshot>("/state")
       .then((value) => {
         if (mounted) {
-          setSnapshot(value);
+          applySnapshot(value);
           setConnected(true);
           setLoading(false);
           for (const task of value.tasks)
@@ -225,7 +236,7 @@ export default function App() {
               } catch {}
             }
           }
-        setSnapshot(value);
+        applySnapshot(value);
         setLoading(false);
       },
       setConnected,
@@ -295,7 +306,7 @@ export default function App() {
     try {
       await api(path, body);
       const state = await api<Snapshot>("/state");
-      setSnapshot(state);
+      applySnapshot(state);
       if (success) setToast({ message: success });
     } catch (error) {
       setToast({ message: (error as Error).message, error: true });
@@ -316,7 +327,7 @@ export default function App() {
       setEditingTaskId(undefined);
       setSelectedId(task.id);
       setPage("detail");
-      setSnapshot(await api<Snapshot>("/state"));
+      applySnapshot(await api<Snapshot>("/state"));
       setToast({
         message:
           input.mode === "monitor"
@@ -974,6 +985,19 @@ export default function App() {
                   </strong>
                 </div>
               </section>
+              {selected.status === "selecting" && !snapshot.browser.connected && (
+                <div className="schedule-notice" role="status">
+                  <Icon name="browser" size={20} />
+                  <div>
+                    <strong>Connecting to your cinema browser…</strong>
+                    <span>
+                      If Chrome asks to allow remote debugging, click Allow in
+                      your open Chrome window (or open Settings → Open regular
+                      browser).
+                    </span>
+                  </div>
+                </div>
+              )}
               {selected.error && (
                 <div className="form-error">
                   <Icon name="bell" size={17} />
@@ -1058,7 +1082,11 @@ export default function App() {
                               </strong>
                             </div>
                             <div>
-                              <span>PROPOSED SEATS</span>
+                              <span>
+                                {result.simulated
+                                  ? "PROPOSED SEATS"
+                                  : "LAYOUT CANDIDATE"}
+                              </span>
                               <strong>{result.seatLabels.join(", ")}</strong>
                             </div>
                             <div>
@@ -1238,7 +1266,7 @@ export default function App() {
               <CinemaSettings
                 browser={snapshot.browser}
                 onChanged={async () =>
-                  setSnapshot(await api<Snapshot>("/state"))
+                  applySnapshot(await api<Snapshot>("/state"))
                 }
               />
               <section className="panel settings-card">

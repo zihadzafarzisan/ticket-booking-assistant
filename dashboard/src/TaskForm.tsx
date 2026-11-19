@@ -40,7 +40,7 @@ export default function TaskForm({
     requiredSeats: 2,
     mode: "instant",
     source: "live",
-    intervalSeconds: 5,
+    intervalSeconds: 1,
     allowedRows: ["B", "C", "D", "E", "F"],
     preferredTimes: ["afternoon", "evening"],
     locationIds: [
@@ -54,6 +54,7 @@ export default function TaskForm({
     strategy: "best",
     keepTogether: true,
     autoReserve: true,
+    openPaymentGateway: true,
     ...initial,
   });
   const branchChoices = branches?.length
@@ -325,6 +326,7 @@ export default function TaskForm({
                     update("intervalSeconds", Number(e.target.value))
                   }
                 >
+                  <option value="1">1 second (Drop sniper)</option>
                   <option value="2.5">2.5 seconds</option>
                   <option value="5">5 seconds</option>
                   <option value="10">10 seconds</option>

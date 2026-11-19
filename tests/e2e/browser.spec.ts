@@ -190,3 +190,39 @@ test("preselected extra seats require review instead of adding an unintended tic
   expect(await page.locator('[aria-selected="true"]').count()).toBe(1);
   expect(page.url()).toContain("/seats");
 });
+
+test("dismisses or bypasses floating Install banner overlapping the checkout button", async ({
+  page,
+  context,
+}) => {
+  const withOverlay = `<!doctype html><html><body><main>
+    <div style="display:flex;gap:5px">${[1, 2, 3, 4].map((n) => `<button data-seat-label="B${n}" aria-selected="false" style="width:30px;height:34px" onclick="this.setAttribute('aria-selected','true');document.querySelector('#proceed').disabled=document.querySelectorAll('[aria-selected=true]').length!==2;">B${n}</button>`).join("")}</div>
+    <button id="proceed" disabled style="position:fixed;right:24px;bottom:24px;width:240px;height:48px;z-index:10" aria-label="Proceed to checkout with 2 seats for ৳1,000" onclick="location.href='/checkout'">Proceed to checkout</button>
+    <div role="region" aria-label="Install Star Cineplex" style="position:fixed;right:24px;bottom:24px;width:280px;height:80px;z-index:60;background:#111;color:#fff">
+      <div>Install Star Cineplex app</div>
+    </div>
+  </main></body></html>`;
+  await context.route("https://kichole.com/**", (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: route.request().url().includes("/checkout")
+        ? "<h1>Payment fixture</h1>"
+        : withOverlay,
+    }),
+  );
+  await page.goto(show.bookingUrl);
+  const driver = new BrowserDriver(".bot-test-data/unused-profile", true);
+  Object.assign(driver, {
+    context,
+    pages: new Map([["fixture-task:fixture", page]]),
+  });
+  const result = await driver.reserve(
+    "fixture-task",
+    show,
+    input(),
+    new AbortController().signal,
+  );
+  expect(result.status).toBe("awaiting_payment");
+  expect(result.selectedSeats).toHaveLength(2);
+  expect(page.url()).toContain("/checkout");
+});

@@ -1,7 +1,10 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import { resolve } from 'path';
-import { copyFileSync } from 'fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { copyFileSync } from 'node:fs';
+
+const rootDir = dirname(fileURLToPath(import.meta.url));
 
 // https://vitejs.dev/config/
 export default defineConfig({
@@ -14,23 +17,23 @@ export default defineConfig({
         // handling; we copy the source manifest to dist root here so the
         // unpacked extension finds it.
         copyFileSync(
-          resolve(__dirname, 'public/manifest.json'),
-          resolve(__dirname, 'dist/manifest.json')
+          resolve(rootDir, 'public/manifest.json'),
+          resolve(rootDir, 'dist/manifest.json')
         );
       },
     },
   ],
   resolve: {
     alias: {
-      '@': resolve(__dirname, 'src'),
+      '@': resolve(rootDir, 'src'),
     },
   },
   build: {
     rollupOptions: {
       input: {
-        popup: resolve(__dirname, 'src/popup/index.html'),
-        'service-worker': resolve(__dirname, 'src/background/service-worker.ts'),
-        'content-bridge': resolve(__dirname, 'src/content/bridge.ts'),
+        popup: resolve(rootDir, 'src/popup/index.html'),
+        'service-worker': resolve(rootDir, 'src/background/service-worker.ts'),
+        'content-bridge': resolve(rootDir, 'src/content/bridge.ts'),
       },
       output: {
         entryFileNames: (chunkInfo) => {

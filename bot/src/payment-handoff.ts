@@ -80,10 +80,19 @@ export async function openPaymentGateway(
       .catch(() => undefined);
     signal.throwIfAborted();
     try {
-      await control.click({ timeout: 5000 });
-    } catch {
+      await control.click({ timeout: 4000 });
+    } catch (clickError) {
       signal.throwIfAborted();
-      break;
+      if (/intercepts pointer events/i.test((clickError as Error).message)) {
+        try {
+          await control.evaluate((el) => (el as HTMLElement).click());
+        } catch {
+          signal.throwIfAborted();
+          break;
+        }
+      } else {
+        break;
+      }
     }
     const opened = await popup;
     signal.throwIfAborted();

@@ -31,6 +31,7 @@ export interface RankingCriteria {
   preferredLocationIds?: string[]; // Multiple branch IDs e.g. ['bashundhara', 'sony-square']
   preferredScreenTypes?: ScreenType[];
   maxPrice?: number;
+  priceRange?: { min: number; max: number };
   preferredSeatSection?: string;
 }
 
@@ -77,15 +78,6 @@ const SCREEN_TYPE_SCORES: Record<ScreenType, number> = {
   "3d": 0.6,
   "2d": 0.45,
   standard: 0.4,
-};
-
-/**
- * Time period scores
- */
-const TIME_PERIOD_SCORES: Record<string, number> = {
-  evening: 0.9, // Most people prefer evening shows
-  afternoon: 0.7,
-  morning: 0.5,
 };
 
 /**
@@ -147,6 +139,15 @@ export function scoreResult(
   };
 }
 
+export function calculateRowPositionScore(rowLabel: string): number {
+  const normRow = normalizeRowLabel(rowLabel);
+  if (["C", "D", "E"].includes(normRow)) return 1.0;
+  if (["B", "F"].includes(normRow)) return 0.85;
+  if (["G", "H"].includes(normRow)) return 0.7;
+  if (normRow === "A") return 0.35;
+  return 0.5;
+}
+
 /**
  * Calculate seat quality score (0-1)
  * Based on center score, block capacity, and row positioning
@@ -162,23 +163,21 @@ function calculateSeatQualityScore(
     }
   }
 
-  // Primary factor: center score from the block detection
-  const centerWeight = 0.7;
-  const capacityWeight = 0.3;
+  // Weighted components so prime rows (C/D/E) clearly outscore front/back rows even on open rows
+  const centerWeight = 0.55;
+  const capacityWeight = 0.25;
+  const rowWeight = 0.2;
 
   // Capacity bonus: larger blocks score slightly higher
   const capacityScore = Math.min(block.capacity / 8, 1);
-  let score = block.centerScore * centerWeight + capacityScore * capacityWeight;
+  const clampedCenter = Math.max(0, Math.min(1, block.centerScore));
+  const rowScore = calculateRowPositionScore(block.row);
+  const score =
+    clampedCenter * centerWeight +
+    capacityScore * capacityWeight +
+    rowScore * rowWeight;
 
-  // Prime center rows bonus (C, D, E are cinema sweet spot; B, F are secondary)
-  const normRow = normalizeRowLabel(block.row);
-  if (["C", "D", "E"].includes(normRow)) {
-    score = Math.min(1.0, score * 1.15);
-  } else if (["B", "F"].includes(normRow)) {
-    score = Math.min(1.0, score * 1.05);
-  }
-
-  return score;
+  return Math.max(0, Math.min(1, score));
 }
 
 /**
@@ -261,16 +260,29 @@ function calculatePriceScore(
   showtime: Showtime,
   criteria: RankingCriteria,
 ): number {
-  const maxPrice = criteria.maxPrice || showtime.price * 2;
-  const minPrice = showtime.price * 0.5;
-
-  // Normalize price to 0-1 score
-  // Lower is better, so invert the range
-  const priceRange = maxPrice - minPrice;
-  if (priceRange <= 0) return 1;
-
-  const normalizedPrice = (maxPrice - showtime.price) / priceRange;
-  return Math.max(0, Math.min(1, normalizedPrice));
+  if (showtime.price <= 0) return 0.5;
+  if (criteria.maxPrice !== undefined && criteria.maxPrice > 0) {
+    if (showtime.price > criteria.maxPrice) return 0;
+    const minPrice = Math.min(
+      criteria.priceRange?.min ?? criteria.maxPrice * 0.25,
+      criteria.maxPrice,
+    );
+    const range = criteria.maxPrice - minPrice;
+    if (range <= 0) return 1;
+    return Math.max(
+      0,
+      Math.min(1, (criteria.maxPrice - showtime.price) / range),
+    );
+  }
+  if (criteria.priceRange && criteria.priceRange.max > criteria.priceRange.min) {
+    const range = criteria.priceRange.max - criteria.priceRange.min;
+    return Math.max(
+      0,
+      Math.min(1, (criteria.priceRange.max - showtime.price) / range),
+    );
+  }
+  // Neutral score when comparing a single price with no reference range
+  return 0.67;
 }
 
 /**
@@ -326,8 +338,22 @@ export function rankResults(
   weights: RankingWeights = DEFAULT_WEIGHTS,
   criteria: RankingCriteria = {},
 ): RankedResult[] {
+  const positivePrices = results
+    .map((r) => r.showtime.price)
+    .filter((p) => Number.isFinite(p) && p > 0);
+  const effectiveCriteria: RankingCriteria =
+    !criteria.priceRange && positivePrices.length > 1
+      ? {
+          ...criteria,
+          priceRange: {
+            min: Math.min(...positivePrices),
+            max: Math.max(...positivePrices),
+          },
+        }
+      : criteria;
+
   const ranked = results.map((r) =>
-    scoreResult(r.showtime, r.seatBlock, weights, criteria),
+    scoreResult(r.showtime, r.seatBlock, weights, effectiveCriteria),
   );
 
   // Sort by overall score descending
