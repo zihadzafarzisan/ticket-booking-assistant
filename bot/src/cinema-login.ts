@@ -77,23 +77,43 @@ export async function handleCinemaLogin(
   if (attempt.submitted)
     return "The cinema login was not completed. Check your credentials or finish the on-screen step, then retry.";
   const form = password.locator("xpath=ancestor::form[1]");
-  const scope = (await form.count()) ? form : page.locator("body");
+  const hasForm = (await form.count()) > 0;
+  const scope = hasForm ? form : page.locator("body");
   const email = scope
     .locator(
-      'input[type="email"], input[autocomplete="username"], input[name="email"], input[name="username"]',
+      'input[type="email"], input[autocomplete="username"], input[name="email"], input[name="username"], input[name="identifier"], input[type="text"][name*="email" i], input[type="text"][placeholder*="email" i]',
     )
     .filter({ visible: true })
     .first();
-  const submit = scope
-    .getByRole("button", { name: /^(sign\s*in|log\s*in|login|continue)$/i })
+  const namedSubmit = scope
+    .getByRole("button", {
+      name: /^(sign\s*in|log\s*in|login|continue)(\s+to\s+.*)?$/i,
+    })
     .filter({ visible: true })
     .first();
+  const submit =
+    (await namedSubmit.count()) > 0
+      ? namedSubmit
+      : hasForm
+        ? form
+            .locator('button[type="submit"], input[type="submit"]')
+            .filter({ visible: true })
+            .first()
+        : namedSubmit;
   if (!(await email.count()) || !(await submit.count()))
     return "The cinema login form needs your attention. Sign in in the browser, then retry.";
-  if (await form.count()) {
+  if (hasForm) {
     const action = await form.getAttribute("action");
-    if (action && !isCinemaUrl(new URL(action, page.url()).href))
-      return "The login form points outside the supported cinema website. Review it manually.";
+    if (action) {
+      let resolved: string;
+      try {
+        resolved = new URL(action, page.url()).href;
+      } catch {
+        return "The login form points outside the supported cinema website. Review it manually.";
+      }
+      if (!isCinemaUrl(resolved))
+        return "The login form points outside the supported cinema website. Review it manually.";
+    }
   }
   try {
     signal.throwIfAborted();
@@ -110,12 +130,12 @@ export async function handleCinemaLogin(
     signal.throwIfAborted();
     if (!isCinemaUrl(page.url()))
       return "The cinema redirected to another website. Complete login manually.";
-    if (await challenge.count())
+    if ((await challenge.count()) || (await hasUnresolvedTurnstile()))
       return "Complete the cinema OTP or CAPTCHA in your browser, then retry.";
     if (await password.isVisible().catch(() => false))
       return "Cineplex did not complete login. Check your saved credentials or sign in manually, then retry.";
     return undefined;
-  } catch (error) {
+  } catch {
     signal.throwIfAborted();
     // Locator errors may contain form details. Never copy them into mission logs.
     return "Automatic cinema login could not finish. Sign in in your browser, then retry.";

@@ -38,10 +38,29 @@ export class BrowserConnection {
   private browser?: Browser;
   private pending?: Promise<BrowserContext>;
   private opening?: Promise<BrowserContext>;
+  private disconnectListeners = new Set<() => void>();
   constructor(
     private directory: string,
     private launchOptions: { executablePath?: string; headless?: boolean } = {},
   ) {}
+  onDisconnect(listener: () => void): () => void {
+    this.disconnectListeners.add(listener);
+    return () => {
+      this.disconnectListeners.delete(listener);
+    };
+  }
+  isConnected(): boolean {
+    return !!this.browser?.isConnected();
+  }
+  private emitDisconnect() {
+    for (const listener of this.disconnectListeners) {
+      try {
+        listener();
+      } catch {
+        /* ignore subscriber errors */
+      }
+    }
+  }
   async init() {
     try {
       this.endpoint = validateBrowserEndpoint(
@@ -71,7 +90,10 @@ export class BrowserConnection {
     return this.settings();
   }
   private async attach(): Promise<BrowserContext> {
-    if (this.browser?.isConnected()) return this.browser.contexts()[0];
+    if (this.browser?.isConnected()) {
+      const existing = this.browser.contexts()[0];
+      if (existing) return existing;
+    }
     if (this.pending) return this.pending;
     const pending = this.attachOnce();
     this.pending = pending;
@@ -167,6 +189,12 @@ export class BrowserConnection {
       throw new Error("The browser has no regular session to connect to.");
     }
     this.browser = browser;
+    browser.once?.("disconnected", () => {
+      if (this.browser === browser) {
+        this.browser = undefined;
+        this.emitDisconnect();
+      }
+    });
     return context;
   }
   private async activeSocket(endpoint: URL): Promise<string | undefined> {
@@ -302,8 +330,10 @@ export class BrowserConnection {
   }
   async disconnect() {
     // A CDP-attached Browser.close disconnects Playwright; it does not close Chrome.
-    await this.browser?.close();
+    const browser = this.browser;
     this.browser = undefined;
+    await browser?.close().catch(() => {});
+    if (browser) this.emitDisconnect();
   }
 }
 async function findBrowser(): Promise<string> {
