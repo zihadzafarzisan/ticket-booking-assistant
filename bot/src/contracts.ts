@@ -1,7 +1,8 @@
-import type {
-  RankedResult,
-  SeatCategory,
-  TimeSlot,
+import {
+  normalizeSeatLabel,
+  type RankedResult,
+  type SeatCategory,
+  type TimeSlot,
 } from "../../packages/core/src";
 
 export type TaskStatus =
@@ -15,6 +16,32 @@ export type TaskStatus =
   | "completed"
   | "stopped"
   | "error";
+export type PageRefreshState =
+  | "idle"
+  | "warming"
+  | "refreshing"
+  | "drop_detected"
+  | "selecting"
+  | "handoff"
+  | "error";
+export type HandoffReason =
+  | "exact_seats_unavailable"
+  | "seat_stolen_mid_click"
+  | "login_required"
+  | "captcha_required"
+  | "checkout_blocked"
+  | "seat_map_not_ready";
+export interface PageRefreshResult {
+  refreshedAt: string;
+  latencyMs: number;
+  url: string;
+  pageReady: boolean;
+  dropDetected: boolean;
+  availableSeatCount: number;
+  availableTargetSeats: string[];
+  warning?: string;
+  requiresUserAttention?: boolean;
+}
 export interface TaskInput {
   targetMovieId?: string;
   openPaymentGateway?: boolean;
@@ -34,12 +61,19 @@ export interface TaskInput {
   strategy: "best" | "each_location";
   keepTogether: boolean;
   autoReserve: boolean;
+  targetSeats?: string[];
+  exactSeatsOnly?: boolean;
+  refreshBrowserPage?: boolean;
+  preferredHall?: string;
+  preferredShowtime?: string;
 }
 export interface Handoff {
   status: "awaiting_user" | "awaiting_payment";
   message: string;
   url: string;
   selectedSeats: string[];
+  retryable?: boolean;
+  reason?: HandoffReason;
 }
 export interface Candidate extends RankedResult {
   key: string;
@@ -62,12 +96,20 @@ export interface BotTask {
   updatedAt: string;
   checks: number;
   lastCheckAt?: string;
+  lastCheckLatencyMs?: number;
   nextCheckAt?: string;
+  pageRefreshCount?: number;
+  lastPageRefreshAt?: string;
+  pageRefreshState?: PageRefreshState;
+  dropDetectedAt?: string;
+  consecutiveErrors?: number;
+  lastPageUrl?: string;
   error?: string;
   waitReason?: { title: string; message: string };
   results: Candidate[];
   logs: Activity[];
 }
+export type TaskRecord = BotTask;
 export interface BrowserStatus {
   connected: boolean;
   pages: number;
@@ -114,7 +156,27 @@ export function validateTask(value: unknown): TaskInput {
   const today = new Date(Date.now() + 6 * 3600_000).toISOString().slice(0, 10);
   if (targetDate < today)
     throw new Error("The show date cannot be in the past.");
-  const requiredSeats = Number(v.requiredSeats);
+  const targetSeats: string[] = [];
+  if (v.targetSeats !== undefined) {
+    if (!Array.isArray(v.targetSeats) || v.targetSeats.length > 50)
+      throw new Error("Invalid targetSeats.");
+    const seen = new Set<string>();
+    for (const raw of v.targetSeats) {
+      if (typeof raw !== "string")
+        throw new Error("Invalid targetSeats.");
+      const normalized = normalizeSeatLabel(raw);
+      if (!normalized)
+        throw new Error(`Invalid seat label "${raw.trim() || raw}". Use labels like E5 or E6.`);
+      if (!seen.has(normalized)) {
+        seen.add(normalized);
+        targetSeats.push(normalized);
+      }
+    }
+  }
+  const requiredSeats =
+    v.requiredSeats === undefined && targetSeats.length > 0
+      ? targetSeats.length
+      : Number(v.requiredSeats);
   if (
     !Number.isInteger(requiredSeats) ||
     requiredSeats < 1 ||
@@ -157,9 +219,35 @@ export function validateTask(value: unknown): TaskInput {
       !Number.isFinite(Date.parse(scheduledAt)))
   )
     throw new Error("The schedule must include a valid timezone.");
-  for (const key of ["keepTogether", "autoReserve", "openPaymentGateway"])
+  for (const key of [
+    "keepTogether",
+    "autoReserve",
+    "openPaymentGateway",
+    "exactSeatsOnly",
+    "refreshBrowserPage",
+  ])
     if (v[key] !== undefined && typeof v[key] !== "boolean")
       throw new Error(`Invalid ${key}.`);
+  const exactSeatsOnly = v.exactSeatsOnly === true;
+  if (exactSeatsOnly && targetSeats.length > 0 && targetSeats.length < requiredSeats)
+    throw new Error(
+      "Select at least as many exact seats as your seat count when exact seats only is enabled.",
+    );
+  const preferredHall = text("preferredHall") || undefined;
+  if (preferredHall && preferredHall.length > 100)
+    throw new Error("Invalid preferredHall.");
+  const preferredShowtime = text("preferredShowtime") || undefined;
+  if (
+    preferredShowtime &&
+    !/^([01]\d|2[0-3]):[0-5]\d$/.test(preferredShowtime)
+  )
+    throw new Error("Preferred showtime must be in HH:MM 24-hour format.");
+  const mode = choices("mode", ["instant", "monitor"], "instant");
+  const source = choices("source", ["live", "demo"], "live");
+  const refreshBrowserPage =
+    v.refreshBrowserPage === undefined
+      ? mode === "monitor" && source === "live"
+      : v.refreshBrowserPage === true;
   return {
     targetMovieId,
     openPaymentGateway: v.openPaymentGateway === true,
@@ -169,8 +257,8 @@ export function validateTask(value: unknown): TaskInput {
     requiredSeats,
     intervalSeconds,
     scheduledAt,
-    mode: choices("mode", ["instant", "monitor"], "instant"),
-    source: choices("source", ["live", "demo"], "live"),
+    mode,
+    source,
     allowedRows: strings("allowedRows", /^[A-Z]{1,3}$/, 30),
     preferredTimes: strings(
       "preferredTimes",
@@ -201,5 +289,10 @@ export function validateTask(value: unknown): TaskInput {
     strategy: choices("strategy", ["best", "each_location"], "best"),
     keepTogether: v.keepTogether !== false,
     autoReserve: v.autoReserve !== false,
+    ...(targetSeats.length ? { targetSeats } : {}),
+    exactSeatsOnly,
+    refreshBrowserPage,
+    ...(preferredHall ? { preferredHall } : {}),
+    ...(preferredShowtime ? { preferredShowtime } : {}),
   };
 }

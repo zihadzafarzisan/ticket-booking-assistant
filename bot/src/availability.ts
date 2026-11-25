@@ -32,13 +32,63 @@ export function explainMovieAvailability(
   input: Pick<
     TaskInput,
     | "targetMovieId"
+    | "targetShowId"
     | "movieName"
     | "targetDate"
     | "locationIds"
     | "requiredSeats"
     | "preferredTimes"
+    | "preferredHall"
+    | "preferredShowtime"
+    | "targetSeats"
+    | "exactSeatsOnly"
   >,
 ): { title: string; message: string } {
+  if (input.targetShowId) {
+    const pinned = shows.find((show) => show.id === input.targetShowId);
+    if (pinned) {
+      if (pinned.ticketStatus === "not_open") {
+        const opening = pinned.onlineSalesOpenAt
+          ? ` Online sales open at ${pinned.onlineSalesOpenAt}.`
+          : "";
+        return {
+          title: availabilityLabels.not_open,
+          message: `Tickets for ${pinned.movie.title} (${pinned.time} at ${pinned.cinema.name}) are not open yet.${opening} Monitoring every second for the drop.`,
+        };
+      }
+      if (pinned.ticketStatus === "sold_out") {
+        return {
+          title: availabilityLabels.sold_out,
+          message: `${pinned.movie.title} (${pinned.time} at ${pinned.cinema.name}) is currently sold out. Watching for seat releases.`,
+        };
+      }
+      if (["closed", "counter_only", "started"].includes(pinned.ticketStatus)) {
+        return {
+          title: availabilityLabels.closed,
+          message: `Online ticket sales are unavailable for ${pinned.movie.title} (${pinned.time} at ${pinned.cinema.name}).`,
+        };
+      }
+      if (
+        pinned.ticketStatus === "open" &&
+        pinned.availableSeats < input.requiredSeats
+      ) {
+        return {
+          title: availabilityLabels.insufficient,
+          message: `${pinned.movie.title} (${pinned.time}) currently reports ${pinned.availableSeats} seat(s), fewer than your requested ${input.requiredSeats}.`,
+        };
+      }
+      if (
+        pinned.ticketStatus === "open" &&
+        input.targetSeats?.length &&
+        input.exactSeatsOnly
+      ) {
+        return {
+          title: "Exact target seats not available yet",
+          message: `Requested seats (${input.targetSeats.join(", ")}) were not available on ${pinned.movie.title} (${pinned.time}). Watching for them or disable Exact seats only for fallback.`,
+        };
+      }
+    }
+  }
   const selectedMovies = movies.filter((movie) =>
     input.targetMovieId
       ? movie.id === input.targetMovieId
@@ -81,18 +131,33 @@ export function explainMovieAvailability(
     };
   const times = locations.filter(
     (show) =>
-      !input.preferredTimes.length ||
-      input.preferredTimes.includes(getTimeSlot(show.time)),
+      (!input.preferredTimes.length ||
+        input.preferredTimes.includes(getTimeSlot(show.time))) &&
+      (!input.preferredShowtime ||
+        show.time.slice(0, 5) === input.preferredShowtime),
   );
   if (!times.length)
     return {
       title: "Showtime preferences exclude every show",
       message: `Published showtimes at your locations are ${[...new Set(locations.map((show) => show.time))].sort().join(", ")}. Clear or change the preferred showtimes to search them.`,
     };
+  const preferredHall = input.preferredHall?.trim().toLowerCase();
+  const halls = preferredHall
+    ? times.filter(
+        (show) =>
+          show.hall.id.toLowerCase() === preferredHall ||
+          show.hall.name.toLowerCase().includes(preferredHall),
+      )
+    : times;
+  if (!halls.length)
+    return {
+      title: "Hall filter excludes every show",
+      message: `Published halls for these showtimes are ${[...new Set(times.map((show) => show.hall.name))].sort().join(", ")}. Clear or change the hall filter to search them.`,
+    };
   const available = movieDateAvailability(
-    times,
+    halls,
     branches,
-    times[0].movie.id,
+    halls[0].movie.id,
     input.targetDate,
     input.locationIds,
     input.requiredSeats,
@@ -101,7 +166,9 @@ export function explainMovieAvailability(
     title: availabilityLabels[available.state],
     message:
       available.state === "available"
-        ? "The cinema reports tickets, but no seat group matched the current row, category or together preferences. Adjust the seating preferences and retry."
+        ? input.targetSeats?.length && input.exactSeatsOnly
+          ? `The cinema reports tickets, but your exact seats (${input.targetSeats.join(", ")}) did not match. Disable Exact seats only to allow fallback or keep watching.`
+          : "The cinema reports tickets, but no seat group matched the current row, category or together preferences. Adjust the seating preferences and retry."
         : `${availabilityLabels[available.state]} for ${input.requiredSeats} seats on ${input.targetDate}. Choose another date, seat count or location, or watch for tickets to open.`,
   };
 }

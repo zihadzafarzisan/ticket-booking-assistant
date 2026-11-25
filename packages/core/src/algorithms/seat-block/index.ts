@@ -383,3 +383,127 @@ export function createCompositeSeatBlock(
     meetsRequirement: capacity >= requiredCount,
   };
 }
+
+/**
+ * Normalize a seat label like "e-05", "E 5", or "E5" to canonical uppercase "E5".
+ * Returns null if the input is not a valid seat label.
+ */
+export function normalizeSeatLabel(raw: string): string | null {
+  if (typeof raw !== "string") return null;
+  const match = raw
+    .trim()
+    .toUpperCase()
+    .match(/^([A-Z]{1,3})\s*-?\s*0*([1-9]\d{0,2})$/);
+  if (!match) return null;
+  return `${match[1]}${match[2]}`;
+}
+
+/**
+ * Select exact requested seats from a seat map if they are currently available.
+ * - If targetSeats.length <= requiredSeats: all target seats must be available and match requiredSeats.
+ * - If targetSeats.length > requiredSeats: prefers a contiguous run of requiredSeats among available
+ *   target seats, falling back to user-specified priority order.
+ */
+export function selectExactSeats(
+  seatMap: SeatMap,
+  targetSeats: string[],
+  requiredSeats: number,
+): Seat[] {
+  if (!targetSeats?.length || requiredSeats <= 0) return [];
+  const normalizedTargets: string[] = [];
+  const seenTargets = new Set<string>();
+  for (const raw of targetSeats) {
+    const label = normalizeSeatLabel(raw);
+    if (label && !seenTargets.has(label)) {
+      seenTargets.add(label);
+      normalizedTargets.push(label);
+    }
+  }
+  if (normalizedTargets.length < requiredSeats) return [];
+
+  const availableByLabel = new Map<string, Seat>();
+  seatMap.rows.forEach((seats) => {
+    for (const seat of seats) {
+      if (seat.status !== "available" && seat.status !== "selected") continue;
+      const label = normalizeSeatLabel(seat.label);
+      if (label && seenTargets.has(label) && !availableByLabel.has(label)) {
+        availableByLabel.set(label, seat);
+      }
+    }
+  });
+
+  const matched = normalizedTargets
+    .map((label) => availableByLabel.get(label))
+    .filter((seat): seat is Seat => !!seat);
+
+  if (normalizedTargets.length === requiredSeats) {
+    return matched.length === requiredSeats ? matched : [];
+  }
+  if (matched.length < requiredSeats) return [];
+
+  // Prefer a contiguous run of requiredSeats within the same row
+  const byRow = new Map<string, Seat[]>();
+  for (const seat of matched) {
+    const rowKey = normalizeRowLabel(seat.row);
+    const list = byRow.get(rowKey) || [];
+    list.push(seat);
+    byRow.set(rowKey, list);
+  }
+  for (const rowSeats of byRow.values()) {
+    const sorted = [...rowSeats].sort((a, b) => a.number - b.number);
+    let run: Seat[] = [];
+    for (const seat of sorted) {
+      const prev = run.at(-1);
+      const contiguous =
+        !prev ||
+        (!prev.aisle &&
+          !seat.aisle &&
+          prev.section === seat.section &&
+          seat.number === prev.number + 1 &&
+          (prev.adjacentSeatIds === undefined ||
+            prev.adjacentSeatIds.includes(seat.id)));
+      if (!contiguous) run = [];
+      run.push(seat);
+      if (run.length === requiredSeats) return run;
+    }
+  }
+
+  return matched.slice(0, requiredSeats);
+}
+
+/**
+ * Create a high-priority seat block representing exact user-selected seats.
+ */
+export function createExactSeatBlock(
+  seats: Seat[],
+  requiredCount: number,
+): SeatBlock {
+  const sortedSeats = [...seats].sort((a, b) => {
+    if (a.row !== b.row) return a.row.localeCompare(b.row);
+    return a.number - b.number;
+  });
+  const uniqueRows = Array.from(
+    new Set(sortedSeats.map((s) => normalizeRowLabel(s.row) || s.row)),
+  );
+  const rowLabel =
+    uniqueRows.length === 1 ? uniqueRows[0] : uniqueRows.join(", ");
+  const labels = sortedSeats.map(
+    (s) => normalizeSeatLabel(s.label) || s.label.toUpperCase(),
+  );
+  const availableCount = sortedSeats.filter(
+    (s) => s.status === "available" || s.status === "selected",
+  ).length;
+
+  return {
+    id: `exact-${labels.join("-")}`,
+    row: rowLabel,
+    section: sortedSeats[0]?.section,
+    seats: sortedSeats,
+    startSeat: sortedSeats[0]?.label || "",
+    endSeat: sortedSeats[sortedSeats.length - 1]?.label || "",
+    capacity: sortedSeats.length,
+    availableCount,
+    centerScore: 1,
+    meetsRequirement: availableCount >= requiredCount,
+  };
+}

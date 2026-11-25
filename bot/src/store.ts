@@ -26,7 +26,20 @@ export class TaskStore {
         await mkdir(dirname(this.filename), { recursive: true });
         const temp = `${this.filename}.tmp`;
         await writeFile(temp, content, { encoding: "utf8", mode: 0o600 });
-        await rename(temp, this.filename);
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            await rename(temp, this.filename);
+            break;
+          } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (
+              attempt === 2 ||
+              (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES")
+            )
+              throw error;
+            await new Promise((done) => setTimeout(done, 40 * (attempt + 1)));
+          }
+        }
       });
     return this.pending;
   }

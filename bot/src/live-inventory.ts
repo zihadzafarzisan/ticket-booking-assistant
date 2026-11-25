@@ -124,17 +124,26 @@ async function publicFetch(url: string, signal: AbortSignal) {
   let lastError: unknown;
   for (let attempt = 0; attempt < 2; attempt++) {
     signal.throwIfAborted();
+    let retryDelayMs = 250;
     try {
       const response = await fetch(url, {
-        signal: AbortSignal.any([signal, AbortSignal.timeout(12_000)]),
+        signal: AbortSignal.any([signal, AbortSignal.timeout(6_000)]),
         cache: "no-store",
-        headers: { Accept: "application/json" },
+        headers: {
+          Accept: "application/json",
+          "Cache-Control": "no-cache",
+        },
       });
       if (response.ok) return response.json();
       const error = new Error(
         `Star Cineplex ${new URL(url).pathname.split("/").at(-1)} request failed (HTTP ${response.status}).`,
       );
       if (response.status < 500 && response.status !== 429) throw error;
+      if (response.status === 429) {
+        const header = Number(response.headers.get("retry-after"));
+        if (Number.isFinite(header) && header > 0)
+          retryDelayMs = Math.min(1500, Math.round(header * 1000));
+      }
       lastError = error;
     } catch (error) {
       if (signal.aborted) throw error;
@@ -145,7 +154,7 @@ async function publicFetch(url: string, signal: AbortSignal) {
         const timer = setTimeout(() => {
           signal.removeEventListener("abort", onAbort);
           resolve();
-        }, 400);
+        }, retryDelayMs);
         const onAbort = () => {
           clearTimeout(timer);
           reject(signal.reason);
@@ -258,14 +267,38 @@ export class LiveInventoryService {
     };
     return base;
   }
-  async fresh(maxAgeMs = 800): Promise<LiveInventory> {
+  async fresh(maxAgeMs = 450, signal?: AbortSignal): Promise<LiveInventory> {
+    signal?.throwIfAborted();
     if (
       this.data &&
       !this.lastError &&
       this.now() - Date.parse(this.data.fetchedAt!) < maxAgeMs
     )
       return this.snapshot();
-    await this.refresh();
+    const pending = this.refresh();
+    if (!signal) {
+      await pending;
+      return this.snapshot();
+    }
+    await new Promise<void>((resolve, reject) => {
+      if (signal.aborted) {
+        reject(signal.reason);
+        return;
+      }
+      const onAbort = () => reject(signal.reason);
+      signal.addEventListener("abort", onAbort, { once: true });
+      pending.then(
+        () => {
+          signal.removeEventListener("abort", onAbort);
+          resolve();
+        },
+        (error) => {
+          signal.removeEventListener("abort", onAbort);
+          reject(error);
+        },
+      );
+    });
+    signal.throwIfAborted();
     return this.snapshot();
   }
   refresh(): Promise<LiveInventory> {
@@ -396,7 +429,11 @@ export class LiveInventoryService {
         queue.slice(offset, offset + 4).map(async ([hallId, mapId]) => {
           const cached = this.hallNames.get(mapId);
           if (cached && cached.expires > now) {
-            names.set(hallId, cached.name);
+            if (cached.name) names.set(hallId, cached.name);
+            else
+              warnings.push(
+                `Hall ${hallId.slice(0, 8)}: public name unavailable; showing its identifier.`,
+              );
             return;
           }
           try {
@@ -417,6 +454,7 @@ export class LiveInventoryService {
             this.hallNames.set(mapId, { name, expires: now + 24 * 3600_000 });
           } catch (error) {
             signal.throwIfAborted();
+            this.hallNames.set(mapId, { name: "", expires: now + 5 * 60_000 });
             warnings.push(
               `Hall ${hallId.slice(0, 8)}: public name unavailable; showing its identifier.`,
             );

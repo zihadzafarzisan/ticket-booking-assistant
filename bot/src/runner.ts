@@ -1,21 +1,44 @@
 import { randomUUID } from "node:crypto";
-import { getShowtimeLocationId } from "../../packages/core/src";
+import {
+  DEFAULT_WEIGHTS,
+  createExactSeatBlock,
+  getShowtimeLocationId,
+  normalizeSeatLabel,
+  scoreResult,
+  type Seat,
+  type Showtime,
+} from "../../packages/core/src";
 import type {
   Activity,
   BotTask,
   Candidate,
+  PageRefreshResult,
   Snapshot,
   TaskInput,
 } from "./contracts";
 import { validateTask } from "./contracts";
 import { TaskStore } from "./store";
-import type { BrowserPort } from "./browser";
+import type { BrowserPort as BaseBrowserPort } from "./browser";
+
+export interface BrowserPort extends BaseBrowserPort {
+  onDisconnect?(listener: () => void): () => void;
+  refreshPage?(
+    taskId: string,
+    targetUrl: string,
+    input: TaskInput,
+    signal: AbortSignal,
+  ): Promise<PageRefreshResult>;
+}
 
 export interface DiscoveryPort {
   search(input: TaskInput, signal: AbortSignal): Promise<Candidate[]>;
   explainEmptyResult?(
     input: TaskInput,
+    signal?: AbortSignal,
   ): Promise<{ title: string; message: string } | undefined>;
+  resolveMonitorTarget?(
+    input: TaskInput,
+  ): { url: string; show?: Showtime } | undefined;
 }
 const activeStatuses = [
   "queued",
@@ -29,6 +52,8 @@ export class BotRunner {
   private controllers = new Map<string, AbortController>();
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
   private listeners = new Set<() => void>();
+  private lastPageWarnings = new Map<string, string>();
+  private unsubscribeBrowser?: () => void;
   private startedAt = new Date().toISOString();
   private seq = 0;
   private shuttingDown = false;
@@ -36,13 +61,21 @@ export class BotRunner {
     private store: TaskStore,
     private discovery: DiscoveryPort,
     readonly browser: BrowserPort,
-  ) {}
+  ) {
+    this.unsubscribeBrowser = this.browser.onDisconnect?.(() => {
+      if (!this.shuttingDown) this.emit();
+    });
+  }
   async init() {
     for (const task of await this.store.load()) {
+      task.pageRefreshCount ??= 0;
+      task.pageRefreshState ??= "idle";
+      task.consecutiveErrors ??= 0;
       this.tasks.set(task.id, task);
       if (activeStatuses.includes(task.status)) {
         if (task.status === "selecting") {
           task.status = "awaiting_user";
+          task.pageRefreshState = "idle";
           this.log(
             task,
             "Browser selection was interrupted. Review and retry when ready.",
@@ -50,10 +83,12 @@ export class BotRunner {
           );
         } else if (task.input.mode === "monitor") {
           task.status = "monitoring";
+          task.pageRefreshState = "idle";
           this.log(task, "Monitor restored after bot restart.");
           this.schedule(task, 1000);
         } else {
           task.status = "stopped";
+          task.pageRefreshState = "idle";
           this.log(
             task,
             "Instant search was interrupted. Run it again when ready.",
@@ -69,6 +104,9 @@ export class BotRunner {
     return () => {
       this.listeners.delete(listener);
     };
+  }
+  notifyBrowserChange() {
+    if (!this.shuttingDown) this.emit();
   }
   snapshot(): Snapshot {
     return {
@@ -123,6 +161,9 @@ export class BotRunner {
       createdAt: now,
       updatedAt: now,
       checks: 0,
+      pageRefreshCount: 0,
+      pageRefreshState: "idle",
+      consecutiveErrors: 0,
       results: [],
       logs: [],
     };
@@ -157,13 +198,85 @@ export class BotRunner {
     );
     this.emit();
   }
+  private nextMonitorDelay(task: BotTask, elapsedMs: number): number {
+    const baseMs = task.input.intervalSeconds * 1000;
+    const errors = task.consecutiveErrors ?? 0;
+    if (errors === 0) return Math.max(50, baseMs - elapsedMs);
+    if (errors <= 3) return baseMs;
+    if (errors <= 6) return Math.min(5_000, baseMs * 2);
+    return Math.min(10_000, baseMs * 4);
+  }
+  private buildDomDropCandidate(
+    task: BotTask,
+    target: { url: string; show?: Showtime },
+    pageResult: PageRefreshResult,
+  ): Candidate {
+    const showtime: Showtime = target.show || {
+      id: task.input.targetShowId || `dom-drop-${task.id}`,
+      movie: {
+        id: task.input.targetMovieId || "live-movie",
+        title: task.input.movieName,
+      },
+      cinema: {
+        id: "star-cineplex",
+        name: "Star Cineplex",
+        location: "Dhaka",
+      },
+      hall: {
+        id: "live-hall",
+        name: task.input.preferredHall || "Star Cineplex Hall",
+        screenType: "standard",
+        capacity: Math.max(task.input.requiredSeats, pageResult.availableSeatCount),
+      },
+      date: task.input.targetDate,
+      time: task.input.preferredShowtime || "00:00",
+      screenType: "standard",
+      price: 0,
+      currency: "BDT",
+      availableSeats: Math.max(
+        task.input.requiredSeats,
+        pageResult.availableSeatCount,
+      ),
+      totalSeats: Math.max(
+        task.input.requiredSeats,
+        pageResult.availableSeatCount,
+      ),
+      bookingUrl: target.url,
+    };
+    const labels = pageResult.availableTargetSeats.length
+      ? pageResult.availableTargetSeats.slice(0, task.input.requiredSeats)
+      : task.input.targetSeats?.length
+        ? task.input.targetSeats.slice(0, task.input.requiredSeats)
+        : Array.from(
+            { length: task.input.requiredSeats },
+            (_, idx) => `SEAT${idx + 1}`,
+          );
+    const seats: Seat[] = labels.map((label, idx) => {
+      const match = label.match(/^([A-Z]+)(\d+)$/);
+      return {
+        id: label,
+        row: match?.[1] || "A",
+        number: match ? Number(match[2]) : idx + 1,
+        label,
+        status: "available",
+      };
+    });
+    const seatBlock = createExactSeatBlock(seats, task.input.requiredSeats);
+    return {
+      ...scoreResult(showtime, seatBlock, DEFAULT_WEIGHTS),
+      key: `${showtime.id}:${seatBlock.id}`,
+      seatLabels: labels,
+      simulated: false,
+    };
+  }
   async check(id: string) {
     const task = this.get(id);
     if (
       this.shuttingDown ||
       this.controllers.has(id) ||
       task.status === "stopped" ||
-      task.status === "completed"
+      task.status === "completed" ||
+      task.status === "awaiting_payment"
     )
       return;
     if (
@@ -177,12 +290,13 @@ export class BotRunner {
     this.timers.delete(id);
     const controller = new AbortController();
     this.controllers.set(id, controller);
+    const tickStartedAt = Date.now();
     const prevWait = task.waitReason?.message;
     const isRepeatMonitorCheck =
       task.input.mode === "monitor" && task.checks > 0 && !task.results.length;
     task.status = "scanning";
     task.checks++;
-    task.lastCheckAt = new Date().toISOString();
+    task.lastCheckAt = new Date(tickStartedAt).toISOString();
     task.nextCheckAt = undefined;
     task.error = undefined;
     task.waitReason = undefined;
@@ -196,14 +310,83 @@ export class BotRunner {
     try {
       if (shouldPersist) await this.persist();
       else this.emit();
-      const results = await this.discovery.search(
+      let results = await this.discovery.search(
         task.input,
         controller.signal,
       );
       controller.signal.throwIfAborted();
+
+      // Coordinate live 1s Cineplex page refresh alongside API poll when a show page exists.
+      if (
+        !results.length &&
+        task.input.mode === "monitor" &&
+        task.input.source === "live" &&
+        task.input.refreshBrowserPage !== false &&
+        this.browser.refreshPage
+      ) {
+        const target = this.discovery.resolveMonitorTarget?.(task.input);
+        if (target?.url) {
+          task.pageRefreshState =
+            (task.pageRefreshCount ?? 0) === 0 ? "warming" : "refreshing";
+          task.lastPageUrl = target.url;
+          this.emit();
+          try {
+            const pageResult = await this.browser.refreshPage(
+              task.id,
+              target.url,
+              task.input,
+              controller.signal,
+            );
+            controller.signal.throwIfAborted();
+            task.pageRefreshCount = (task.pageRefreshCount ?? 0) + 1;
+            task.lastPageRefreshAt = pageResult.refreshedAt;
+            task.lastPageUrl = pageResult.url || target.url;
+            if (pageResult.dropDetected) {
+              shouldPersist = true;
+              task.dropDetectedAt ||= new Date().toISOString();
+              task.pageRefreshState = "drop_detected";
+              this.lastPageWarnings.delete(task.id);
+              this.log(
+                task,
+                "Ticket drop detected on the live Cineplex page! Acquiring seats immediately.",
+                "success",
+              );
+              results = [this.buildDomDropCandidate(task, target, pageResult)];
+            } else if (pageResult.warning) {
+              task.pageRefreshState = pageResult.requiresUserAttention
+                ? "error"
+                : "refreshing";
+              if (this.lastPageWarnings.get(task.id) !== pageResult.warning) {
+                this.lastPageWarnings.set(task.id, pageResult.warning);
+                shouldPersist = true;
+                this.log(task, pageResult.warning, "warning");
+              }
+            } else {
+              this.lastPageWarnings.delete(task.id);
+              task.pageRefreshState = "refreshing";
+            }
+          } catch (pageError) {
+            if (controller.signal.aborted) return;
+            task.pageRefreshState = "error";
+            const msg = `Page refresh hiccup (API monitoring continues): ${cleanErrorMessage(pageError)}`;
+            if (this.lastPageWarnings.get(task.id) !== msg) {
+              this.lastPageWarnings.set(task.id, msg);
+              shouldPersist = true;
+              this.log(task, msg, "warning");
+            }
+          }
+        }
+      }
+
+      task.consecutiveErrors = 0;
+      task.lastCheckLatencyMs = Math.max(0, Date.now() - tickStartedAt);
       task.results = results;
       if (results.length) {
         shouldPersist = true;
+        if (task.input.mode === "monitor" && !task.dropDetectedAt) {
+          task.dropDetectedAt = new Date().toISOString();
+          task.pageRefreshState = "drop_detected";
+        }
         this.log(
           task,
           `${results.length} matching seat option${results.length === 1 ? "" : "s"} found.`,
@@ -212,14 +395,17 @@ export class BotRunner {
         task.status = "awaiting_user";
         await this.persist();
         if (task.input.autoReserve && task.input.source === "live")
-          await this.reserveResults(task, undefined, controller.signal);
+          await this.reserveResults(task, undefined, controller.signal, true);
         else if (task.input.source === "demo")
           this.log(
             task,
             "Demo results ready. Inspect seats in the dashboard; live browser actions are disabled.",
           );
       } else {
-        task.waitReason = await this.discovery.explainEmptyResult?.(task.input);
+        task.waitReason = await this.discovery.explainEmptyResult?.(
+          task.input,
+          controller.signal,
+        );
         controller.signal.throwIfAborted();
         task.status =
           task.input.mode === "monitor" ? "monitoring" : "awaiting_user";
@@ -240,6 +426,8 @@ export class BotRunner {
     } catch (error) {
       if (controller.signal.aborted) return;
       shouldPersist = true;
+      task.consecutiveErrors = (task.consecutiveErrors ?? 0) + 1;
+      task.lastCheckLatencyMs = Math.max(0, Date.now() - tickStartedAt);
       task.error = cleanErrorMessage(error);
       this.log(task, task.error, "error");
       task.status = task.input.mode === "monitor" ? "monitoring" : "error";
@@ -247,16 +435,51 @@ export class BotRunner {
       if (this.controllers.get(id) === controller) this.controllers.delete(id);
       if (!controller.signal.aborted && !this.shuttingDown) {
         if (task.status === "monitoring")
-          this.schedule(task, task.input.intervalSeconds * 1000);
+          this.schedule(
+            task,
+            this.nextMonitorDelay(task, Date.now() - tickStartedAt),
+          );
         if (shouldPersist) await this.persist();
         else this.emit();
       }
     }
   }
+  private verifyHandoff(
+    task: BotTask,
+    handoff: NonNullable<Candidate["handoff"]>,
+  ): NonNullable<Candidate["handoff"]> {
+    if (handoff.status !== "awaiting_payment") return handoff;
+    const normalizedAcquired = handoff.selectedSeats.map(
+      (label) => normalizeSeatLabel(label) || label.trim().toUpperCase(),
+    );
+    if (normalizedAcquired.length !== task.input.requiredSeats) {
+      return {
+        ...handoff,
+        status: "awaiting_user",
+        message: `Expected ${task.input.requiredSeats} verified seat(s), but ${normalizedAcquired.length} were reported. Review the browser before paying.`,
+      };
+    }
+    if (task.input.exactSeatsOnly && task.input.targetSeats?.length) {
+      const allowed = new Set(
+        task.input.targetSeats.map(
+          (label) => normalizeSeatLabel(label) || label.trim().toUpperCase(),
+        ),
+      );
+      if (normalizedAcquired.some((label) => !allowed.has(label))) {
+        return {
+          ...handoff,
+          status: "awaiting_user",
+          message: `Selected seats (${handoff.selectedSeats.join(", ")}) did not strictly match target seats (${task.input.targetSeats.join(", ")}). Review the browser before paying.`,
+        };
+      }
+    }
+    return handoff;
+  }
   private async reserveResults(
     task: BotTask,
     key: string | undefined,
     signal: AbortSignal,
+    fromMonitorCheck = false,
   ) {
     if (task.input.source === "demo")
       throw new Error("Demo tasks cannot open a live booking.");
@@ -278,21 +501,24 @@ export class BotRunner {
     if (!targets.length)
       throw new Error("No seat option is available. Run another check.");
     task.status = "selecting";
+    task.pageRefreshState = "selecting";
     await this.persist();
     for (const result of targets) {
       signal.throwIfAborted();
+      if (result.handoff?.status === "awaiting_payment") continue;
       this.log(
         task,
         `Opening ${result.showtime.cinema.name} at ${result.showtime.time}.`,
       );
       await this.persist();
-      const handoff = await this.browser.reserve(
+      const rawHandoff = await this.browser.reserve(
         task.id,
         result.showtime,
         task.input,
         signal,
       );
       signal.throwIfAborted();
+      const handoff = this.verifyHandoff(task, rawHandoff);
       result.handoff = handoff;
       this.log(
         task,
@@ -300,9 +526,28 @@ export class BotRunner {
         handoff.status === "awaiting_payment" ? "success" : "warning",
       );
     }
-    task.status = targets.every((r) => r.handoff?.status === "awaiting_payment")
-      ? "awaiting_payment"
-      : "awaiting_user";
+    if (
+      fromMonitorCheck &&
+      task.input.mode === "monitor" &&
+      targets.every((r) => r.handoff?.retryable === true)
+    ) {
+      task.status = "monitoring";
+      task.pageRefreshState = "refreshing";
+      task.waitReason = {
+        title: "Retrying seat selection",
+        message: targets[0].handoff!.message,
+      };
+      task.results = [];
+      return;
+    }
+    const allPaymentReady = targets.every(
+      (r) => r.handoff?.status === "awaiting_payment",
+    );
+    task.status = allPaymentReady ? "awaiting_payment" : "awaiting_user";
+    task.pageRefreshState =
+      allPaymentReady || targets.some((r) => r.handoff?.selectedSeats.length)
+        ? "handoff"
+        : "idle";
   }
   async reserve(id: string, key?: string) {
     const task = this.get(id);
@@ -310,13 +555,16 @@ export class BotRunner {
       throw new Error("This task is busy. Wait or stop it first.");
     if (task.status === "stopped" || task.status === "completed")
       throw new Error("Resume this task before reserving seats.");
+    if (task.status === "awaiting_payment" && !key)
+      throw new Error("Seats are already held and awaiting payment.");
     const controller = new AbortController();
     this.controllers.set(id, controller);
     try {
-      await this.reserveResults(task, key, controller.signal);
+      await this.reserveResults(task, key, controller.signal, false);
     } catch (error) {
       if (!controller.signal.aborted) {
         task.status = "error";
+        task.pageRefreshState = "error";
         task.error = cleanErrorMessage(error);
         this.log(task, task.error, "error");
       }
@@ -327,18 +575,23 @@ export class BotRunner {
   }
   async stop(id: string) {
     const task = this.get(id);
-    const wasSelecting = task.status === "selecting";
+    const shouldCancelBrowser =
+      task.status === "selecting" ||
+      ((task.status === "monitoring" || task.status === "scanning") &&
+        (task.pageRefreshCount ?? 0) > 0);
     this.controllers.get(id)?.abort();
     clearTimeout(this.timers.get(id));
     this.timers.delete(id);
+    this.lastPageWarnings.delete(id);
     task.status = "stopped";
     task.nextCheckAt = undefined;
+    task.pageRefreshState = "idle";
     this.log(
       task,
       "Task stopped. No further automated checks will run.",
       "warning",
     );
-    if (wasSelecting) await this.browser.cancel(id);
+    if (shouldCancelBrowser) await this.browser.cancel(id);
     await this.persist();
     return task;
   }
@@ -351,6 +604,10 @@ export class BotRunner {
     task.input.scheduledAt = undefined;
     task.status = "queued";
     task.error = undefined;
+    task.consecutiveErrors = 0;
+    task.dropDetectedAt = undefined;
+    task.pageRefreshState = "idle";
+    this.lastPageWarnings.delete(id);
     this.log(task, "Task resumed.");
     await this.persist();
     this.schedule(task, 50);
@@ -371,6 +628,13 @@ export class BotRunner {
     task.results = [];
     task.waitReason = undefined;
     task.nextCheckAt = undefined;
+    task.consecutiveErrors = 0;
+    task.dropDetectedAt = undefined;
+    task.pageRefreshCount = 0;
+    task.lastPageRefreshAt = undefined;
+    task.lastPageUrl = undefined;
+    task.pageRefreshState = "idle";
+    this.lastPageWarnings.delete(id);
     this.log(task, "Search preferences updated. Checking again.");
     await this.persist();
     this.schedule(task, 50);
@@ -393,6 +657,7 @@ export class BotRunner {
     if (activeStatuses.includes(task.status) || this.controllers.has(id))
       throw new Error("Stop the task before removing it.");
     this.tasks.delete(id);
+    this.lastPageWarnings.delete(id);
     await this.persist();
   }
   async focus(id: string, key: string) {
@@ -405,6 +670,8 @@ export class BotRunner {
   }
   async shutdown() {
     this.shuttingDown = true;
+    this.unsubscribeBrowser?.();
+    this.unsubscribeBrowser = undefined;
     for (const timer of this.timers.values()) clearTimeout(timer);
     for (const controller of this.controllers.values()) controller.abort();
     await this.persist();

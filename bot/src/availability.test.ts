@@ -186,3 +186,55 @@ it("classifies movies with open online shows as showing even if catalog isUpcomi
   ).toBe("showing");
   expect(data.counts.nowShowingMovies).toBe(2);
 });
+it("explains pinned targetShowId not_open, preferredHall and exactSeatsOnly blockers", async () => {
+  const { data } = await fixtureData();
+  const base = {
+    targetMovieId: "movie-upcoming",
+    targetShowId: "show-later",
+    movieName: "Upcoming Film",
+    targetDate: "2099-12-01",
+    requiredSeats: 2,
+    locationIds: [] as string[],
+    preferredTimes: [] as import("./contracts").TaskInput["preferredTimes"],
+  };
+  const pinnedNotOpen = explainMovieAvailability(
+    data.movies,
+    data.shows,
+    data.branches,
+    base,
+  );
+  expect(pinnedNotOpen.title).toBe("Tickets not open yet");
+  expect(pinnedNotOpen.message).toContain("Monitoring every second");
+
+  const exactOpen = explainMovieAvailability(
+    data.movies,
+    data.shows,
+    data.branches,
+    {
+      ...base,
+      targetMovieId: "movie-running",
+      targetShowId: "show-open",
+      movieName: "Running Film",
+      targetSeats: ["E5", "E6"],
+      exactSeatsOnly: true,
+    },
+  );
+  expect(exactOpen.title).toBe("Exact target seats not available yet");
+  expect(exactOpen.message).toContain("E5, E6");
+
+  const hallFiltered = explainMovieAvailability(
+    data.movies,
+    data.shows,
+    data.branches,
+    {
+      targetMovieId: "movie-running",
+      movieName: "Running Film",
+      targetDate: "2099-12-01",
+      requiredSeats: 2,
+      locationIds: [],
+      preferredTimes: [],
+      preferredHall: "IMAX 99",
+    },
+  );
+  expect(hallFiltered.title).toBe("Hall filter excludes every show");
+});

@@ -235,4 +235,94 @@ describe("live Star Cineplex inventory", () => {
       ),
     ).toBe("closed");
   });
+  it("negative-caches failed hall metadata lookups and unblocks aborted fresh() callers immediately", async () => {
+    const fixture = inventoryFixture();
+    let seatMapRequests = 0;
+    const inventory = new LiveInventoryService(
+      async (url, signal) => {
+        if (url.includes("/seat-maps/")) {
+          seatMapRequests++;
+          throw new Error("Metadata 404");
+        }
+        return fixture.fetcher(url, signal);
+      },
+      { now: () => now },
+    );
+    await inventory.refresh();
+    expect(seatMapRequests).toBe(2);
+    await inventory.refresh();
+    // Second 1s tick must not re-fetch failing seat-map metadata within negative-cache window
+    expect(seatMapRequests).toBe(2);
+    expect(inventory.snapshot().warnings).toHaveLength(2);
+
+    // Aborting a caller's signal unblocks fresh() immediately
+    const slowInventory = new LiveInventoryService(
+      (_url, signal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          });
+        }),
+      { now: () => now },
+    );
+    const controller = new AbortController();
+    const pending = slowInventory.fresh(0, controller.signal);
+    controller.abort(new Error("Task stopped"));
+    await expect(pending).rejects.toThrow("Task stopped");
+    await slowInventory.stop();
+  });
+  it("resolves live monitor targets for upcoming shows while returning undefined for unannounced movies", async () => {
+    const fixture = inventoryFixture();
+    fixture.movies.push({
+      id: "movie-unannounced",
+      title: { en: "Unannounced Film" },
+      isNowShowing: false,
+      isUpcoming: true,
+      organizerOrgId: fixture.movies[0].organizerOrgId,
+      formats: ["2D"],
+      duration: 110,
+      language: "en",
+    });
+    const inventory = service(fixture);
+    await inventory.refresh();
+    const adapter = new LiveStarCineplexAdapter(inventory);
+    const upcomingTarget = adapter.resolveMonitorTarget({
+      targetMovieId: "movie-upcoming",
+      movieName: "Upcoming Film",
+      targetDate: "2026-11-17",
+      requiredSeats: 2,
+      mode: "monitor",
+      source: "live",
+      intervalSeconds: 1,
+      allowedRows: [],
+      preferredTimes: [],
+      locationIds: [],
+      preferredCategory: "any",
+      rowPreference: "center",
+      strategy: "best",
+      keepTogether: true,
+      autoReserve: true,
+    });
+    expect(upcomingTarget?.show?.id).toBe("show-later");
+    expect(upcomingTarget?.url).toContain("/shows/show-later/seats");
+
+    const unannouncedTarget = adapter.resolveMonitorTarget({
+      targetMovieId: "movie-unannounced",
+      movieName: "Unannounced Film",
+      targetDate: "2026-11-17",
+      requiredSeats: 2,
+      mode: "monitor",
+      source: "live",
+      intervalSeconds: 1,
+      allowedRows: [],
+      preferredTimes: [],
+      locationIds: [],
+      preferredCategory: "any",
+      rowPreference: "center",
+      strategy: "best",
+      keepTogether: true,
+      autoReserve: true,
+    });
+    expect(unannouncedTarget).toBeUndefined();
+  });
 });

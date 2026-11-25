@@ -175,6 +175,7 @@ export function createBotServer(
             // Validate before disconnecting a working session.
             validateBrowserEndpoint(input.endpoint);
             await runner.browser.close();
+            runner.notifyBrowserChange?.();
             json(res, 200, await options.browserConnection.configure(input));
             return;
           }
@@ -199,6 +200,7 @@ export function createBotServer(
             if (route === "/api/browser/open" && options.browserConnection)
               await options.browserConnection.openRegular();
             await runner.browser.openSession(route === "/api/browser/connect");
+            runner.notifyBrowserChange?.();
             json(res, 200, runner.browser.status());
             return;
           }

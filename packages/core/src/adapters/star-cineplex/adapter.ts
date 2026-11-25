@@ -490,7 +490,24 @@ export class StarCineplexAdapter extends CinemaAdapter {
    * Fallback seat map if hall layout endpoint fails
    */
   private generateFallbackSeatMap(showtime: Showtime): SeatMap {
-    const rows = ["A", "B", "C", "D", "E", "F", "G", "H", "J", "K"];
+    const rows = [
+      "A",
+      "B",
+      "C",
+      "D",
+      "E",
+      "F",
+      "G",
+      "H",
+      "I",
+      "J",
+      "K",
+      "L",
+      "M",
+      "N",
+      "O",
+      "P",
+    ];
     const rowsMap = new Map<string, Seat[]>();
     const seatsPerRow = 16;
     const reportedAvailable = Math.max(0, showtime.availableSeats ?? 0);

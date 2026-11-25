@@ -2,10 +2,20 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
 import { once } from "node:events";
-import { BotRunner } from "./runner";
+import {
+  BotRunner,
+  type BrowserPort,
+  type DiscoveryPort,
+} from "./runner";
 import { TaskStore } from "./store";
 import { createBotServer } from "./server";
-import { validateTask, type Candidate, type TaskInput } from "./contracts";
+import {
+  validateTask,
+  type Candidate,
+  type Handoff,
+  type PageRefreshResult,
+  type TaskInput,
+} from "./contracts";
 import {
   createSeatBlock,
   scoreResult,
@@ -420,5 +430,290 @@ describe("local HTTP API", () => {
       server.closeAllConnections();
       await new Promise<void>((done) => server.close(() => done()));
     }
+  });
+});
+
+describe("1s drop sniper, exact seats, live page refresh and telemetry", () => {
+  it("normalizes and validates targetSeats, exactSeatsOnly, refreshBrowserPage, preferredHall and preferredShowtime", () => {
+    const validated = validateTask({
+      ...input({ mode: "monitor", source: "live" }),
+      requiredSeats: undefined,
+      targetSeats: [" e-05 ", "E6", "e5"],
+      exactSeatsOnly: true,
+      preferredHall: "Hall 1",
+      preferredShowtime: "19:30",
+    });
+    expect(validated.targetSeats).toEqual(["E5", "E6"]);
+    expect(validated.requiredSeats).toBe(2);
+    expect(validated.exactSeatsOnly).toBe(true);
+    expect(validated.refreshBrowserPage).toBe(true);
+    expect(validated.preferredHall).toBe("Hall 1");
+    expect(validated.preferredShowtime).toBe("19:30");
+
+    expect(() =>
+      validateTask({ ...input(), targetSeats: ["not-a-seat"] }),
+    ).toThrow("Invalid seat label");
+    expect(() =>
+      validateTask({
+        ...input({ requiredSeats: 3 }),
+        targetSeats: ["E5", "E6"],
+        exactSeatsOnly: true,
+      }),
+    ).toThrow("exact seats");
+    expect(() =>
+      validateTask({ ...input(), preferredShowtime: "25:99" }),
+    ).toThrow("HH:MM");
+    expect(() =>
+      validateTask({ ...input(), refreshBrowserPage: "yes" }),
+    ).toThrow("refreshBrowserPage");
+  });
+
+  it("refreshes the Cineplex page every tick when a show URL exists and triggers immediate reservation on DOM drop", async () => {
+    const root = resolve(".bot-test-data");
+    await mkdir(root, { recursive: true });
+    const directory = await mkdtemp(resolve(root, "sniper-"));
+    roots.push(directory);
+    const store = new TaskStore(resolve(directory, "tasks.json"));
+    let dropNow = false;
+    const targetShow = candidate().showtime;
+    const refreshPage = vi.fn(
+      async (): Promise<PageRefreshResult> => ({
+        refreshedAt: new Date().toISOString(),
+        latencyMs: 35,
+        url: targetShow.bookingUrl,
+        pageReady: true,
+        dropDetected: dropNow,
+        availableSeatCount: dropNow ? 10 : 0,
+        availableTargetSeats: dropNow ? ["E5", "E6"] : [],
+      }),
+    );
+    const reserve = vi.fn(
+      async (): Promise<Handoff> => ({
+        status: "awaiting_payment",
+        message: "Exact seats E5, E6 verified and checkout opened.",
+        url: "https://kichole.com/checkout",
+        selectedSeats: ["E5", "E6"],
+      }),
+    );
+    const browser: BrowserPort = {
+      status: () => ({ connected: true, pages: 1, headless: true }),
+      openSession: vi.fn(async () => {}),
+      refreshPage,
+      reserve,
+      cancel: vi.fn(async () => {}),
+      focus: vi.fn(async () => {}),
+      close: vi.fn(async () => {}),
+    };
+    const discovery: DiscoveryPort = {
+      search: vi.fn(async () => []),
+      resolveMonitorTarget: vi.fn(() => ({
+        url: targetShow.bookingUrl,
+        show: targetShow,
+      })),
+    };
+    const runner = new BotRunner(store, discovery, browser);
+    runners.push(runner);
+    await runner.init();
+
+    const task = await runner.create(
+      input({
+        mode: "monitor",
+        intervalSeconds: 1,
+        targetSeats: ["E5", "E6"],
+        exactSeatsOnly: true,
+        refreshBrowserPage: true,
+      }),
+    );
+    // Tick 1: not open yet -> refreshes page, updates telemetry, stays monitoring
+    await runner.check(task.id);
+    const afterTick1 = runner.get(task.id);
+    expect(afterTick1.status).toBe("monitoring");
+    expect(afterTick1.pageRefreshCount).toBe(1);
+    expect(afterTick1.pageRefreshState).toBe("refreshing");
+    expect(afterTick1.lastPageRefreshAt).toBeTruthy();
+    expect(afterTick1.lastCheckLatencyMs).toBeGreaterThanOrEqual(0);
+    expect(afterTick1.consecutiveErrors).toBe(0);
+    expect(reserve).not.toHaveBeenCalled();
+
+    // Tick 2: DOM detects ticket drop before API catches up -> immediate reserve!
+    dropNow = true;
+    await runner.check(task.id);
+    const afterDrop = runner.get(task.id);
+    expect(refreshPage).toHaveBeenCalledTimes(2);
+    expect(reserve).toHaveBeenCalledOnce();
+    expect(afterDrop.status).toBe("awaiting_payment");
+    expect(afterDrop.dropDetectedAt).toBeTruthy();
+    expect(afterDrop.pageRefreshState).toBe("handoff");
+    expect(afterDrop.results[0].handoff?.selectedSeats).toEqual(["E5", "E6"]);
+
+    // Completing an awaiting_payment task must NOT close the user's checkout page
+    await runner.complete(task.id);
+    expect(browser.cancel).not.toHaveBeenCalled();
+    expect(runner.get(task.id).status).toBe("completed");
+  });
+
+  it("downgrades awaiting_payment if acquired seats violate exactSeatsOnly or requiredSeats", async () => {
+    const { runner, browser } = await setup();
+    browser.reserve.mockResolvedValueOnce({
+      status: "awaiting_payment",
+      message: "Wrong seats returned",
+      url: "https://kichole.com/checkout",
+      selectedSeats: ["B1", "B2"],
+    });
+    const task = await runner.create(
+      input({
+        mode: "instant",
+        targetSeats: ["E5", "E6"],
+        exactSeatsOnly: true,
+      }),
+    );
+    await runner.check(task.id);
+    expect(runner.get(task.id).status).toBe("awaiting_user");
+    expect(runner.get(task.id).results[0].handoff?.message).toContain(
+      "did not strictly match target seats",
+    );
+  });
+
+  it("recovers cleanly into monitoring on retryable handoff (seat stolen mid-click) and transient network errors", async () => {
+    const root = resolve(".bot-test-data");
+    await mkdir(root, { recursive: true });
+    const directory = await mkdtemp(resolve(root, "retry-"));
+    roots.push(directory);
+    const store = new TaskStore(resolve(directory, "tasks.json"));
+    let call = 0;
+    const search = vi.fn(async () => {
+      call++;
+      if (call === 1) throw new Error("Transient 503");
+      return [candidate()];
+    });
+    let reserveCalls = 0;
+    const browser: BrowserPort = {
+      status: () => ({ connected: true, pages: 1, headless: true }),
+      openSession: vi.fn(async () => {}),
+      reserve: vi.fn(async (): Promise<Handoff> => {
+        reserveCalls++;
+        if (reserveCalls === 1) {
+          return {
+            status: "awaiting_user",
+            message: "E6 was taken mid-click; E5 rolled back cleanly.",
+            url: "https://kichole.com/shows/show-1/seats",
+            selectedSeats: [],
+            retryable: true,
+            reason: "seat_stolen_mid_click",
+          };
+        }
+        return {
+          status: "awaiting_payment",
+          message: "Seats verified on retry.",
+          url: "https://kichole.com/checkout",
+          selectedSeats: ["E5", "E6"],
+        };
+      }),
+      cancel: vi.fn(async () => {}),
+      focus: vi.fn(async () => {}),
+      close: vi.fn(async () => {}),
+    };
+    const runner = new BotRunner(store, { search }, browser);
+    runners.push(runner);
+    await runner.init();
+
+    const task = await runner.create(
+      input({
+        mode: "monitor",
+        intervalSeconds: 1,
+        targetSeats: ["E5", "E6"],
+        exactSeatsOnly: true,
+      }),
+    );
+    // Tick 1: transient error increments consecutiveErrors without stopping monitor
+    await runner.check(task.id);
+    expect(runner.get(task.id).status).toBe("monitoring");
+    expect(runner.get(task.id).consecutiveErrors).toBe(1);
+
+    // Tick 2: recovers from error, seat stolen mid-click -> retryable re-enters monitoring
+    await runner.check(task.id);
+    expect(runner.get(task.id).status).toBe("monitoring");
+    expect(runner.get(task.id).consecutiveErrors).toBe(0);
+    expect(runner.get(task.id).waitReason?.title).toBe(
+      "Retrying seat selection",
+    );
+
+    // Tick 3: retry succeeds -> awaiting_payment
+    await runner.check(task.id);
+    expect(runner.get(task.id).status).toBe("awaiting_payment");
+    expect(runner.get(task.id).results[0].handoff?.selectedSeats).toEqual([
+      "E5",
+      "E6",
+    ]);
+  });
+
+  it("emits snapshot immediately on browser disconnect and cancels active page refresh on stop", async () => {
+    const root = resolve(".bot-test-data");
+    await mkdir(root, { recursive: true });
+    const directory = await mkdtemp(resolve(root, "disconnect-"));
+    roots.push(directory);
+    const store = new TaskStore(resolve(directory, "tasks.json"));
+    let connected = true;
+    const disconnectListeners = new Set<() => void>();
+    const browser: BrowserPort = {
+      status: () => ({ connected, pages: connected ? 1 : 0, headless: true }),
+      onDisconnect: (fn) => {
+        disconnectListeners.add(fn);
+        return () => disconnectListeners.delete(fn);
+      },
+      openSession: vi.fn(async () => {
+        connected = true;
+      }),
+      refreshPage: vi.fn(async () => ({
+        refreshedAt: new Date().toISOString(),
+        latencyMs: 12,
+        url: "https://kichole.com/shows/show-1/seats",
+        pageReady: true,
+        dropDetected: false,
+        availableSeatCount: 0,
+        availableTargetSeats: [],
+      })),
+      reserve: vi.fn(async () => ({
+        status: "awaiting_payment" as const,
+        message: "ok",
+        url: "https://kichole.com/checkout",
+        selectedSeats: ["B1", "B2"],
+      })),
+      cancel: vi.fn(async () => {}),
+      focus: vi.fn(async () => {}),
+      close: vi.fn(async () => {}),
+    };
+    const runner = new BotRunner(
+      store,
+      {
+        search: vi.fn(async () => []),
+        resolveMonitorTarget: () => ({
+          url: "https://kichole.com/shows/show-1/seats",
+        }),
+      },
+      browser,
+    );
+    runners.push(runner);
+    await runner.init();
+
+    const snapshots: boolean[] = [];
+    runner.subscribe(() => snapshots.push(runner.snapshot().browser.connected));
+    expect(runner.snapshot().browser.connected).toBe(true);
+
+    // Simulate external Chrome close
+    connected = false;
+    for (const fn of disconnectListeners) fn();
+    expect(snapshots.at(-1)).toBe(false);
+    expect(runner.snapshot().browser.connected).toBe(false);
+
+    // Active monitor with pageRefreshCount > 0 cancels watch page on stop
+    const task = await runner.create(
+      input({ mode: "monitor", intervalSeconds: 1, refreshBrowserPage: true }),
+    );
+    await runner.check(task.id);
+    expect(runner.get(task.id).pageRefreshCount).toBe(1);
+    await runner.stop(task.id);
+    expect(browser.cancel).toHaveBeenCalledWith(task.id);
+    expect(runner.get(task.id).pageRefreshState).toBe("idle");
   });
 });

@@ -346,4 +346,104 @@ describe("standalone discovery", () => {
       fetchMock.mockRestore();
     }
   });
+  it("supports exact targetSeats with strict exactSeatsOnly vs contiguous fallback", () => {
+    const seats = [1, 2, 3, 4, 5, 6, 7, 8].map((number) => ({
+      id: `E${number}`,
+      row: "E",
+      number,
+      label: `E${number}`,
+      status: number === 6 ? ("occupied" as const) : ("available" as const),
+    }));
+    const map: SeatMap = {
+      rows: new Map([["E", seats]]),
+      blocks: [],
+      cinemaId: "star-cineplex",
+      movieId: "m1",
+      showtimeId: "s1",
+      hallName: "Hall 1",
+      screenType: "2d",
+      totalSeats: 8,
+      availableSeats: 7,
+      fetchedAt: new Date(),
+    };
+    // Exact E5, E6 with E6 occupied: exactSeatsOnly returns [], fallback returns best contiguous block
+    expect(
+      eligibleBlocks(map, {
+        ...input(),
+        allowedRows: ["E"],
+        targetSeats: ["E5", "E6"],
+        exactSeatsOnly: true,
+      }),
+    ).toEqual([]);
+    const fallback = eligibleBlocks(map, {
+      ...input(),
+      allowedRows: ["E"],
+      targetSeats: ["E5", "E6"],
+      exactSeatsOnly: false,
+    });
+    expect(fallback.length).toBeGreaterThan(0);
+    expect(fallback[0].id.startsWith("exact-")).toBe(false);
+
+    // Once E6 opens, exact block E5-E6 ranks first
+    seats[5].status = "available";
+    const exactOnly = eligibleBlocks(map, {
+      ...input(),
+      allowedRows: ["E"],
+      targetSeats: ["E5", "E6"],
+      exactSeatsOnly: true,
+    });
+    expect(exactOnly).toHaveLength(1);
+    expect(exactOnly[0].id).toBe("exact-E5-E6");
+    expect(exactOnly[0].seats.map((s) => s.label)).toEqual(["E5", "E6"]);
+
+    const withFallback = eligibleBlocks(map, {
+      ...input(),
+      allowedRows: ["E"],
+      targetSeats: ["E5", "E6"],
+      exactSeatsOnly: false,
+    });
+    expect(withFallback[0].id).toBe("exact-E5-E6");
+  });
+  it("returns empty instead of throwing for pinned upcoming targetShowId in monitor mode and filters hall/showtime", async () => {
+    const demo = new DemoAdapter();
+    const discovery = new DiscoveryService(demo, demo);
+    // Monitor mode on not-yet-open/unpublished pinned show returns [] cleanly
+    const monitored = await discovery.search(
+      {
+        ...input(),
+        mode: "monitor",
+        targetShowId: "not-yet-open-show",
+      },
+      new AbortController().signal,
+    );
+    expect(monitored).toEqual([]);
+
+    // Exact showtime filter matches only that HH:MM show
+    const allDemo = await discovery.search(
+      { ...input(), preferredTimes: [] },
+      new AbortController().signal,
+    );
+    const sampleTime = allDemo[0].showtime.time.slice(0, 5);
+    const byTime = await discovery.search(
+      { ...input(), preferredTimes: [], preferredShowtime: sampleTime },
+      new AbortController().signal,
+    );
+    expect(byTime.length).toBeGreaterThan(0);
+    expect(
+      byTime.every((r) => r.showtime.time.slice(0, 5) === sampleTime),
+    ).toBe(true);
+
+    // Preferred hall filter
+    const sampleHall = allDemo[0].showtime.hall.name;
+    const byHall = await discovery.search(
+      { ...input(), preferredTimes: [], preferredHall: sampleHall },
+      new AbortController().signal,
+    );
+    expect(byHall.length).toBeGreaterThan(0);
+    expect(
+      byHall.every((r) =>
+        r.showtime.hall.name.toLowerCase().includes(sampleHall.toLowerCase()),
+      ),
+    ).toBe(true);
+  });
 });

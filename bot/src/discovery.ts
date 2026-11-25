@@ -3,6 +3,8 @@ import {
   DemoAdapter,
   detectSeatBlocks,
   selectOptimalSeats,
+  selectExactSeats,
+  createExactSeatBlock,
   fulfillRequiredSeats,
   createCompositeSeatBlock,
   createSeatBlock,
@@ -16,8 +18,40 @@ import type {
   SeatMap,
   SeatBlock,
   Seat,
+  Showtime,
+  Movie,
+  ShowtimeFilters,
 } from "../../packages/core/src";
 import type { Candidate, TaskInput } from "./contracts";
+import type { MonitorTarget } from "./live-adapter";
+
+type SignalAwareAdapter = CinemaAdapter & {
+  searchMovies(query: string, signal?: AbortSignal): Promise<Movie[]>;
+  getShowtimes(
+    movie: Movie,
+    filters?: ShowtimeFilters,
+    signal?: AbortSignal,
+  ): Promise<Showtime[]>;
+  explainEmptyResult?(
+    input: TaskInput,
+    signal?: AbortSignal,
+  ): Promise<{ title: string; message: string }>;
+  resolveMonitorTarget?(input: TaskInput): MonitorTarget | undefined;
+};
+
+function matchesHall(show: Showtime, preferredHall?: string): boolean {
+  if (!preferredHall) return true;
+  const query = preferredHall.trim().toLowerCase();
+  return (
+    show.hall.id.toLowerCase() === query ||
+    show.hall.name.toLowerCase().includes(query)
+  );
+}
+
+function matchesShowtime(show: Showtime, preferredShowtime?: string): boolean {
+  if (!preferredShowtime) return true;
+  return show.time.slice(0, 5) === preferredShowtime;
+}
 
 export class DiscoveryService {
   constructor(
@@ -26,20 +60,27 @@ export class DiscoveryService {
   ) {}
   async explainEmptyResult(
     input: TaskInput,
+    signal?: AbortSignal,
   ): Promise<{ title: string; message: string } | undefined> {
     if (input.source !== "live") return undefined;
-    const adapter = this.live as CinemaAdapter & {
-      explainEmptyResult?(
-        input: TaskInput,
-      ): Promise<{ title: string; message: string }>;
-    };
-    return adapter.explainEmptyResult?.(input);
+    const adapter = this.live as SignalAwareAdapter;
+    return adapter.explainEmptyResult?.(input, signal);
+  }
+  resolveMonitorTarget(input: TaskInput): MonitorTarget | undefined {
+    if (input.source !== "live") return undefined;
+    const adapter = this.live as SignalAwareAdapter;
+    return adapter.resolveMonitorTarget?.(input);
   }
 
   async search(input: TaskInput, signal: AbortSignal): Promise<Candidate[]> {
-    const adapter = input.source === "demo" ? this.demo : this.live;
+    const adapter = (
+      input.source === "demo" ? this.demo : this.live
+    ) as SignalAwareAdapter;
     const movies = (
-      await adapter.searchMovies(input.targetMovieId ? "all" : input.movieName)
+      await adapter.searchMovies(
+        input.targetMovieId ? "all" : input.movieName,
+        signal,
+      )
     ).filter(
       (movie) => !input.targetMovieId || movie.id === input.targetMovieId,
     );
@@ -53,30 +94,41 @@ export class DiscoveryService {
     const shows = (
       await Promise.all(
         movies.slice(0, 8).map((movie) =>
-          adapter.getShowtimes(movie, {
-            date: input.targetDate,
-            minAvailableSeats: input.requiredSeats,
-          }),
+          adapter.getShowtimes(
+            movie,
+            {
+              date: input.targetDate,
+              minAvailableSeats: input.requiredSeats,
+            },
+            signal,
+          ),
         ),
       )
     ).flat();
     signal.throwIfAborted();
     if (input.targetShowId) {
       const selected = shows.find((show) => show.id === input.targetShowId);
-      if (!selected)
+      if (!selected) {
+        if (input.mode === "monitor") return [];
         throw new Error(
           "The selected show is not currently available for this movie, date and seat count. Use Adjust search to unpin it or choose another show.",
         );
+      }
       if (!matchesLocation(selected, input.locationIds))
         throw new Error(
           `The selected show is at ${selected.cinema.name}, but your branch filter excludes it. Use Adjust search to change the branch or unpin the show.`,
         );
       if (
-        input.preferredTimes.length &&
-        !input.preferredTimes.includes(getTimeSlot(selected.time))
+        (input.preferredTimes.length &&
+          !input.preferredTimes.includes(getTimeSlot(selected.time))) ||
+        !matchesShowtime(selected, input.preferredShowtime)
       )
         throw new Error(
           `The selected show starts at ${selected.time}, but your time filter excludes it. Use Adjust search to change the time filter or unpin the show.`,
+        );
+      if (!matchesHall(selected, input.preferredHall))
+        throw new Error(
+          `The selected show is in ${selected.hall.name}, but your hall filter excludes it. Use Adjust search to change the hall filter or unpin the show.`,
         );
     }
     const filtered = shows
@@ -89,11 +141,15 @@ export class DiscoveryService {
           (!input.targetShowId || show.id === input.targetShowId) &&
           matchesLocation(show, input.locationIds) &&
           (!input.preferredTimes.length ||
-            input.preferredTimes.includes(getTimeSlot(show.time))),
+            input.preferredTimes.includes(getTimeSlot(show.time))) &&
+          matchesHall(show, input.preferredHall) &&
+          matchesShowtime(show, input.preferredShowtime),
       )
       .sort((a, b) => a.time.localeCompare(b.time));
-    const rawPairs: Array<{ showtime: (typeof filtered)[number]; seatBlock: SeatBlock }> =
-      [];
+    const rawPairs: Array<{
+      showtime: (typeof filtered)[number];
+      seatBlock: SeatBlock;
+    }> = [];
     // Bounded concurrency prevents catalog searches from flooding inventory endpoints.
     const queue = filtered.slice(0, 36);
     for (let index = 0; index < queue.length; index += 4) {
@@ -116,14 +172,18 @@ export class DiscoveryService {
     }).map((result) => ({
       ...result,
       key: `${result.showtime.id}:${result.seatBlock.id}`,
-      seatLabels: selectOptimalSeats(
-        result.seatBlock,
-        input.requiredSeats,
-      ).map((s) => s.label),
+      seatLabels: result.seatBlock.id.startsWith("exact-")
+        ? result.seatBlock.seats.map((s) => s.label)
+        : selectOptimalSeats(result.seatBlock, input.requiredSeats).map(
+            (s) => s.label,
+          ),
       simulated: input.source === "demo",
     }));
     return candidates
       .sort((a, b) => {
+        const aExact = a.seatBlock.id.startsWith("exact-") ? 1 : 0;
+        const bExact = b.seatBlock.id.startsWith("exact-") ? 1 : 0;
+        if (aExact !== bExact) return bExact - aExact;
         if (
           input.rowPreference === "front" &&
           a.seatBlock.row !== b.seatBlock.row
@@ -141,6 +201,16 @@ export class DiscoveryService {
 }
 
 export function eligibleBlocks(map: SeatMap, input: TaskInput) {
+  let exactBlock: SeatBlock | undefined;
+  if (input.targetSeats && input.targetSeats.length > 0) {
+    const exact = selectExactSeats(map, input.targetSeats, input.requiredSeats);
+    if (exact.length === input.requiredSeats) {
+      exactBlock = createExactSeatBlock(exact, input.requiredSeats);
+    }
+    if (input.exactSeatsOnly) {
+      return exactBlock ? [exactBlock] : [];
+    }
+  }
   const all = detectSeatBlocks(map, {
     requiredSeats: input.requiredSeats,
     allowedRows: input.allowedRows,
@@ -179,7 +249,7 @@ export function eligibleBlocks(map: SeatMap, input: TaskInput) {
         b.centerScore - a.centerScore ||
         b.capacity - a.capacity,
     );
-  return sufficient;
+  return exactBlock ? [exactBlock, ...sufficient] : sufficient;
 }
 
 function honorKnownBoundaries(
