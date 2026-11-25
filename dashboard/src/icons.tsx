@@ -90,6 +90,13 @@ const paths: Record<string, React.ReactNode> = {
       <path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7" />
     </>
   ),
+  star: (
+    <polygon
+      points="12 2.5 14.9 8.6 21.6 9.5 16.7 14.2 17.9 20.9 12 17.7 6.1 20.9 7.3 14.2 2.4 9.5 9.1 8.6 12 2.5"
+      fill="currentColor"
+      stroke="none"
+    />
+  ),
 };
 export function Icon({
   name,

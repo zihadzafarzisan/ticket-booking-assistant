@@ -26,6 +26,23 @@ const shortDate = (date: string) =>
     month: "short",
     timeZone: "Asia/Dhaka",
   });
+const dateTileParts = (date: string) => {
+  const d = new Date(`${date}T12:00:00+06:00`);
+  return {
+    weekday: d.toLocaleDateString("en-GB", {
+      weekday: "short",
+      timeZone: "Asia/Dhaka",
+    }),
+    day: d.toLocaleDateString("en-GB", {
+      day: "2-digit",
+      timeZone: "Asia/Dhaka",
+    }),
+    month: d.toLocaleDateString("en-GB", {
+      month: "short",
+      timeZone: "Asia/Dhaka",
+    }),
+  };
+};
 const branchName = (show: LiveShow) =>
   show.cinema.name.replace(/^Star Cineplex\s*\(/, "").replace(/\)$/, "");
 export default function LiveCineplex({
@@ -381,6 +398,69 @@ export default function LiveCineplex({
             </span>
           )}
         </div>
+        {inventory?.fetchedAt && (dates.length > 0 || (inventory.branches.length > 0)) && (
+          <div className="sc-quick-picks" aria-label="Quick date and branch selectors">
+            {dates.length > 0 && (
+              <div className="sc-pick-group">
+                <span className="sc-pick-label">DATE</span>
+                <div className="sc-pick-row">
+                  <button
+                    type="button"
+                    className={`pick pick-date ${date === "" ? "active" : ""}`}
+                    aria-pressed={date === ""}
+                    onClick={() => setDate("")}
+                  >
+                    <small>ALL</small>
+                    <strong>Dates</strong>
+                  </button>
+                  {dates.slice(0, 7).map((day) => {
+                    const parts = dateTileParts(day);
+                    return (
+                      <button
+                        type="button"
+                        key={day}
+                        className={`pick pick-date ${date === day ? "active" : ""}`}
+                        aria-pressed={date === day}
+                        onClick={() => setDate(date === day ? "" : day)}
+                      >
+                        <small>{day === today ? "TODAY" : parts.weekday.toUpperCase()}</small>
+                        <strong>{parts.day} {parts.month}</strong>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            {inventory.branches.length > 0 && (
+              <div className="sc-pick-group">
+                <span className="sc-pick-label">THEATER</span>
+                <div className="sc-pick-row">
+                  <button
+                    type="button"
+                    className={`pick pick-branch ${branch === "" ? "active" : ""}`}
+                    aria-pressed={branch === ""}
+                    onClick={() => setBranch("")}
+                  >
+                    All theaters
+                  </button>
+                  {inventory.branches
+                    .filter((b) => b.active)
+                    .map((b) => (
+                      <button
+                        type="button"
+                        key={b.id}
+                        className={`pick pick-branch ${branch === b.id ? "active" : ""}`}
+                        aria-pressed={branch === b.id}
+                        onClick={() => setBranch(branch === b.id ? "" : b.id)}
+                      >
+                        {b.name}
+                      </button>
+                    ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
         {!inventory?.fetchedAt && (
           <div className="waiting-state">
             <span className="radar">

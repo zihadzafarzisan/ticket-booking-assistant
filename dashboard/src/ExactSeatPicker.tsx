@@ -126,8 +126,16 @@ export default function ExactSeatPicker({
       </div>
 
       <div className="seat-picker-map" role="group" aria-label="Interactive seat map">
+        <div className="seat-picker-header">
+          <span className="seat-category-bar">STAR CINEPLEX HALL LAYOUT · ROWS A–P</span>
+          <span className="seat-picker-count">
+            {targetSeats.length} selected
+          </span>
+        </div>
         <div className="seat-picker-screen">
-          <span>SCREEN THIS WAY</span>
+          <div className="screen-trapezoid">
+            <span>SCREEN THIS WAY</span>
+          </div>
         </div>
         <div className="seat-picker-scroll seat-picker-grid-wrap">
           <div className="seat-picker-grid">
@@ -171,6 +179,10 @@ export default function ExactSeatPicker({
           <span>
             <i />
             Tap any seat A1–P16
+          </span>
+          <span>
+            <i className="occupied" />
+            Occupied (live check)
           </span>
         </div>
       </div>

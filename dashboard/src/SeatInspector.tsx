@@ -44,8 +44,19 @@ export default function SeatInspector({
         </button>
       </header>
       <div className="seat-content">
+        <div className="seat-picker-header">
+          <span className="seat-category-bar">
+            {candidate.showtime.hall.name} · SEAT BLOCK PREVIEW
+          </span>
+          <span className="seat-picker-count">
+            {candidate.seatLabels.length} seat
+            {candidate.seatLabels.length === 1 ? "" : "s"}
+          </span>
+        </div>
         <div className="screen">
-          <span>SCREEN THIS WAY</span>
+          <div className="screen-trapezoid">
+            <span>SCREEN THIS WAY</span>
+          </div>
         </div>
         <div className="seat-rows">
           {[...grouped].map(([row, seats]) => (
@@ -76,6 +87,10 @@ export default function SeatInspector({
           <span>
             <i />
             Remaining block
+          </span>
+          <span>
+            <i className="occupied" />
+            Occupied (live)
           </span>
         </div>
         <div className="inspector-note">

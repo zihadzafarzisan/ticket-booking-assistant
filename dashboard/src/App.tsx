@@ -548,16 +548,21 @@ export default function App() {
       <aside className="sidebar">
         <a className="brand" href="/" aria-label="Cinebot home">
           <span className="brand-icon">
-            <Icon name="film" size={23} />
+            <Icon name="star" size={20} />
           </span>
-          <span>
-            cinebot<span className="brand-dot">.</span>
+          <span className="brand-lockup">
+            <span className="brand-wordmark">
+              <strong className="brand-star">STAR</strong>
+              <span className="brand-sep" aria-hidden="true">★</span>
+              <span className="brand-bot">CINEBOT</span>
+            </span>
+            <span className="brand-sub">C I N E P L E X · B O T</span>
           </span>
         </a>
         <div className="workspace-tag">
-          <span className="workspace-avatar">P</span>
+          <span className="workspace-avatar">SC</span>
           <div>
-            Personal workspace<small>LOCAL BOT</small>
+            Star Cineplex<small>LOCAL TICKET BOT</small>
           </div>
           <Icon name="shield" size={15} />
         </div>
@@ -622,6 +627,27 @@ export default function App() {
         </div>
       </aside>
       <div className="workspace">
+        <div className="cineplex-utility-strip" role="region" aria-label="Star Cineplex live status">
+          <div className="utility-left">
+            <span className="utility-brand">
+              <Icon name="star" size={11} />
+              STAR CINEPLEX BANGLADESH
+            </span>
+            <span className="utility-sep" aria-hidden="true">|</span>
+            <span className="utility-metrics">
+              {inventory?.fetchedAt
+                ? `${inventory.branches.filter((b) => b.active).length} branches · ${inventory.counts.openShows} open shows · ${inventory.counts.nowShowingMovies} now showing`
+                : "Connecting to Star Cineplex live schedule…"}
+            </span>
+          </div>
+          <div className="utility-right">
+            <span className={`utility-browser-pill ${snapshot.browser.connected ? "is-ready" : ""}`}>
+              <i />
+              {snapshot.browser.connected ? "Browser ready" : "Browser standby"}
+            </span>
+            <span className="utility-tz">DHAKA GMT+6</span>
+          </div>
+        </div>
         <header className="topbar">
           <div className="breadcrumb">
             <span>Workspace</span>
@@ -734,8 +760,10 @@ export default function App() {
               <section className="hero-banner">
                 <div>
                   <span className="hero-kicker">
-                    <span />
+                    <span className="kicker-rule" aria-hidden="true" />
+                    <Icon name="star" size={10} />
                     GOOD SEATS. ZERO GUESSWORK.
+                    <span className="kicker-rule" aria-hidden="true" />
                   </span>
                   <h2>
                     Your next movie night,
@@ -759,11 +787,11 @@ export default function App() {
                   <div className="orbit orbit-two" />
                   <div className="floating-ticket">
                     <div className="ticket-stub">
-                      <Icon name="film" size={23} />
+                      <Icon name="star" size={18} />
                       <span>ADMIT TWO</span>
                     </div>
                     <div className="ticket-main">
-                      <span>THE BEST SEAT IS YOURS</span>
+                      <span>STAR CINEPLEX · BANGLADESH</span>
                       <strong>
                         MOVIE
                         <br />
@@ -773,10 +801,10 @@ export default function App() {
                       <small>YOUR PLANS, ON AUTOPILOT</small>
                     </div>
                   </div>
-                  <span className="spark spark-one">✳</span>
-                  <span className="spark spark-two">+</span>
+                  <span className="spark spark-one">★</span>
+                  <span className="spark spark-two">✦</span>
                   <span className="art-coordinate">
-                    CINEBOT / ALWAYS ON THE LOOKOUT
+                    STAR CINEPLEX · CINEBOT CONTROL
                   </span>
                 </div>
               </section>
