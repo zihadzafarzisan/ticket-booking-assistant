@@ -57,12 +57,24 @@ export function subscribe(
 ) {
   const stream = new EventSource("/api/events");
   stream.addEventListener("snapshot", (event) => {
-    onSnapshot(JSON.parse((event as MessageEvent).data) as ExtendedSnapshot);
+    let parsed: ExtendedSnapshot;
+    try {
+      parsed = JSON.parse((event as MessageEvent).data) as ExtendedSnapshot;
+    } catch {
+      return;
+    }
+    onSnapshot(parsed);
     onConnection(true);
   });
   stream.onerror = () => onConnection(false);
   stream.addEventListener("inventory", (event) => {
-    onInventory?.(JSON.parse((event as MessageEvent).data) as LiveInventory);
+    let parsed: LiveInventory;
+    try {
+      parsed = JSON.parse((event as MessageEvent).data) as LiveInventory;
+    } catch {
+      return;
+    }
+    onInventory?.(parsed);
   });
   return () => stream.close();
 }

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Icon } from "./icons";
 import {
-  SEAT_COLUMNS,
+  SEAT_PICKER_COLS,
   SEAT_ROWS,
   parseTargetSeatsInput,
 } from "./types";
@@ -27,27 +27,42 @@ export default function ExactSeatPicker({
 }) {
   const [text, setText] = useState(() => targetSeats.join(", "));
   const targetSeatsKey = targetSeats.join(",");
+  const hasTargetSeats = targetSeats.length > 0;
 
   useEffect(() => {
     setText((current) =>
       parseTargetSeatsInput(current).join(",") === targetSeatsKey
         ? current
-        : targetSeats.join(", "),
+        : targetSeatsKey
+          ? targetSeatsKey.split(",").join(", ")
+          : "",
     );
-  }, [targetSeatsKey, targetSeats]);
+  }, [targetSeatsKey]);
+
+  useEffect(() => {
+    if (!hasTargetSeats && exactSeatsOnly) {
+      onExactSeatsOnlyChange(false);
+    }
+  }, [hasTargetSeats, exactSeatsOnly, onExactSeatsOnlyChange]);
 
   const toggleSeat = (label: string) => {
     const next = targetSeats.includes(label)
       ? targetSeats.filter((seat) => seat !== label)
       : [...targetSeats, label];
     onTargetSeatsChange(next);
+    if (next.length === 0 && exactSeatsOnly) {
+      onExactSeatsOnlyChange(false);
+    }
   };
 
   const handleTextChange = (raw: string) => {
     setText(raw);
     const parsed = parseTargetSeatsInput(raw);
-    if (parsed.join(",") !== targetSeats.join(",")) {
+    if (parsed.join(",") !== targetSeatsKey) {
       onTargetSeatsChange(parsed);
+      if (parsed.length === 0 && exactSeatsOnly) {
+        onExactSeatsOnlyChange(false);
+      }
     }
   };
 
@@ -62,13 +77,16 @@ export default function ExactSeatPicker({
           <label htmlFor="target-seats-text">
             Exact target seats <span className="muted">(optional · e.g. E5, E6)</span>
           </label>
-          {targetSeats.length > 0 && (
+          {hasTargetSeats && (
             <button
               type="button"
               className="text-button"
               onClick={() => {
                 setText("");
                 onTargetSeatsChange([]);
+                if (exactSeatsOnly) {
+                  onExactSeatsOnlyChange(false);
+                }
               }}
             >
               Clear seats
@@ -84,7 +102,7 @@ export default function ExactSeatPicker({
           onChange={(e) => handleTextChange(e.target.value)}
           onBlur={handleTextBlur}
         />
-        {targetSeats.length > 0 && (
+        {hasTargetSeats && (
           <div className="seat-chip-list" aria-label="Selected target seats">
             {targetSeats.map((seat) => (
               <span className="seat-chip" key={seat}>
@@ -101,7 +119,7 @@ export default function ExactSeatPicker({
           </div>
         )}
         <small>
-          {targetSeats.length > 0
+          {hasTargetSeats
             ? `${targetSeats.length} exact seat${targetSeats.length === 1 ? "" : "s"} locked in (${targetSeats.join(", ")}). Seat count synced automatically.`
             : "Leave blank to let the bot pick the best available seats in your preferred rows."}
         </small>
@@ -111,7 +129,7 @@ export default function ExactSeatPicker({
         <div className="seat-picker-screen">
           <span>SCREEN THIS WAY</span>
         </div>
-        <div className="seat-picker-scroll">
+        <div className="seat-picker-scroll seat-picker-grid-wrap">
           <div className="seat-picker-grid">
             {SEAT_ROWS.map((row) => (
               <div className="seat-picker-row" key={row}>
@@ -119,7 +137,7 @@ export default function ExactSeatPicker({
                   {row}
                 </span>
                 <div className="seat-picker-cells">
-                  {SEAT_COLUMNS.map((col) => {
+                  {SEAT_PICKER_COLS.map((col) => {
                     const label = `${row}${col}`;
                     const selected = targetSeats.includes(label);
                     return (
@@ -130,7 +148,7 @@ export default function ExactSeatPicker({
                         aria-label={`Seat ${label}`}
                         aria-pressed={selected}
                         title={label}
-                        className={`seat-picker-cell ${selected ? "selected" : ""} ${col === 7 ? "aisle-after" : ""}`}
+                        className={`seat-picker-cell ${selected ? "selected" : ""} ${col === 8 ? "aisle-after" : ""}`}
                         onClick={() => toggleSeat(label)}
                       >
                         {col}
@@ -152,32 +170,37 @@ export default function ExactSeatPicker({
           </span>
           <span>
             <i />
-            Tap any seat A1–P14
+            Tap any seat A1–P16
           </span>
         </div>
       </div>
 
       <div className="sniper-toggles">
-        <label className="check-row">
+        <label className={`check-row ${!hasTargetSeats ? "is-disabled" : ""}`}>
           <input
             type="checkbox"
             data-testid="exact-seats-only-toggle"
-            checked={exactSeatsOnly}
-            onChange={(e) => onExactSeatsOnlyChange(e.target.checked)}
+            disabled={!hasTargetSeats}
+            checked={hasTargetSeats && exactSeatsOnly}
+            onChange={(e) =>
+              onExactSeatsOnlyChange(hasTargetSeats ? e.target.checked : false)
+            }
           />
           <span>
             <strong>
-              {exactSeatsOnly
+              {hasTargetSeats && exactSeatsOnly
                 ? "Exact seats only (strict)"
                 : "Fallback to best available contiguous seats"}
             </strong>
             <small>
-              {exactSeatsOnly
-                ? "Only accept your exact selected seats. If any seat is taken mid-click, roll back cleanly and keep retrying."
-                : "Try your exact seats first; if unavailable, automatically grab the best contiguous block in your preferred rows."}
+              {!hasTargetSeats
+                ? "Select at least 1 exact seat above to enable strict exact-only mode."
+                : exactSeatsOnly
+                  ? "Only accept your exact selected seats. If any seat is taken mid-click, roll back cleanly and keep retrying."
+                  : "Try your exact seats first; if unavailable, automatically grab the best contiguous block in your preferred rows."}
             </small>
-            {exactSeatsOnly &&
-              targetSeats.length > 0 &&
+            {hasTargetSeats &&
+              exactSeatsOnly &&
               targetSeats.length < requiredSeats && (
                 <small className="toggle-warn">
                   Select at least {requiredSeats} exact seat

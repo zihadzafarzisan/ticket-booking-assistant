@@ -57,6 +57,8 @@ export default function MovieBooking({
   const [together, setTogether] = useState(true);
   const [allowedRows, setAllowedRows] = useState<string[]>([]);
   const [preferredTimes, setPreferredTimes] = useState<TimeSlot[]>([]);
+  const [preferredHall, setPreferredHall] = useState("");
+  const [preferredShowtime, setPreferredShowtime] = useState("");
   const [targetSeats, setTargetSeats] = useState<string[]>([]);
   const [exactSeatsOnly, setExactSeatsOnly] = useState(false);
   const [refreshBrowserPage, setRefreshBrowserPage] = useState(true);
@@ -163,12 +165,15 @@ export default function MovieBooking({
     if (seats.length > 0) {
       setCount(seats.length);
       setCountText(String(seats.length));
+    } else {
+      setExactSeatsOnly(false);
     }
   };
 
   const handleExactSeatsOnlyChange = (nextExact: boolean) => {
-    setExactSeatsOnly(nextExact);
-    if (nextExact && targetSeats.length > 0 && count > targetSeats.length) {
+    const resolvedExact = targetSeats.length > 0 ? nextExact : false;
+    setExactSeatsOnly(resolvedExact);
+    if (resolvedExact && targetSeats.length > 0 && count > targetSeats.length) {
       setCount(targetSeats.length);
       setCountText(String(targetSeats.length));
     }
@@ -185,10 +190,12 @@ export default function MovieBooking({
       return;
     }
     if (!forceMonitor && !fresh) return;
+    const finalTargetSeats = targetSeats.length ? targetSeats : undefined;
+    const finalExactSeatsOnly = Boolean(finalTargetSeats && exactSeatsOnly);
     if (
-      exactSeatsOnly &&
-      targetSeats.length > 0 &&
-      targetSeats.length < parsedCount
+      finalExactSeatsOnly &&
+      finalTargetSeats &&
+      finalTargetSeats.length < parsedCount
     ) {
       setError(
         `Exact seats only requires at least ${parsedCount} selected seat${parsedCount === 1 ? "" : "s"}.`,
@@ -221,12 +228,14 @@ export default function MovieBooking({
         scheduledAt,
         allowedRows,
         preferredTimes,
+        preferredHall: preferredHall.trim() || undefined,
+        preferredShowtime: preferredShowtime.trim() || undefined,
         preferredCategory,
         rowPreference,
         strategy: "best",
         keepTogether: together,
-        targetSeats: targetSeats.length ? targetSeats : undefined,
-        exactSeatsOnly,
+        targetSeats: finalTargetSeats,
+        exactSeatsOnly: finalExactSeatsOnly,
         refreshBrowserPage: mode === "monitor" ? refreshBrowserPage : false,
       });
     } catch (err) {
@@ -385,6 +394,28 @@ export default function MovieBooking({
             onRowsChange={setAllowedRows}
             onTimesChange={setPreferredTimes}
           />
+          <div className="form-row">
+            <label className="field">
+              Preferred hall <span className="muted">(optional)</span>
+              <input
+                data-testid="preferred-hall-input"
+                type="text"
+                maxLength={100}
+                placeholder="IMAX, VIP, Hall 1 (optional)"
+                value={preferredHall}
+                onChange={(event) => setPreferredHall(event.target.value)}
+              />
+            </label>
+            <label className="field">
+              Exact showtime <span className="muted">(optional · 24h)</span>
+              <input
+                data-testid="preferred-showtime-input"
+                type="time"
+                value={preferredShowtime}
+                onChange={(event) => setPreferredShowtime(event.target.value)}
+              />
+            </label>
+          </div>
           <ExactSeatPicker
             targetSeats={targetSeats}
             exactSeatsOnly={exactSeatsOnly}
@@ -435,9 +466,10 @@ export default function MovieBooking({
                 type="button"
                 data-testid="schedule-opening-btn"
                 className="button secondary compact schedule-opening-btn"
-                onClick={() =>
-                  setSchedule(toLocalDateTimeInput(availability.openingAt!))
-                }
+                onClick={() => {
+                  const openingAt = availability.openingAt;
+                  if (openingAt) setSchedule(toLocalDateTimeInput(openingAt));
+                }}
               >
                 <Icon name="clock" size={13} />
                 Schedule for online sales open
