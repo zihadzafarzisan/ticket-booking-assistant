@@ -385,7 +385,7 @@ export function createCompositeSeatBlock(
 }
 
 /**
- * Normalize a seat label like "e-05", "E 5", or "E5" to canonical uppercase "E5".
+ * Normalize a seat label like "e-05", "E 5", "E_5", or "E5" to canonical uppercase "E5".
  * Returns null if the input is not a valid seat label.
  */
 export function normalizeSeatLabel(raw: string): string | null {
@@ -393,7 +393,7 @@ export function normalizeSeatLabel(raw: string): string | null {
   const match = raw
     .trim()
     .toUpperCase()
-    .match(/^([A-Z]{1,3})\s*-?\s*0*([1-9]\d{0,2})$/);
+    .match(/^([A-Z]{1,3})\s*[-_]?\s*0*([1-9]\d{0,2})$/);
   if (!match) return null;
   return `${match[1]}${match[2]}`;
 }

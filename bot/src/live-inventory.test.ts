@@ -324,5 +324,54 @@ describe("live Star Cineplex inventory", () => {
       autoReserve: true,
     });
     expect(unannouncedTarget).toBeUndefined();
+
+    // W2: pinned shows that are closed, counter_only, or started must return undefined
+    const pinnedBase = {
+      movieName: "Running Film",
+      targetDate: "2026-11-17",
+      requiredSeats: 2,
+      mode: "monitor" as const,
+      source: "live" as const,
+      intervalSeconds: 1,
+      allowedRows: [],
+      preferredTimes: [],
+      locationIds: [],
+      preferredCategory: "any" as const,
+      rowPreference: "center" as const,
+      strategy: "best" as const,
+      keepTogether: true,
+      autoReserve: true,
+    };
+    expect(
+      adapter.resolveMonitorTarget({
+        ...pinnedBase,
+        targetShowId: "show-closed",
+      }),
+    ).toBeUndefined();
+    expect(
+      adapter.resolveMonitorTarget({
+        ...pinnedBase,
+        targetShowId: "show-counter",
+      }),
+    ).toBeUndefined();
+    expect(
+      adapter.resolveMonitorTarget({
+        ...pinnedBase,
+        targetShowId: "show-later",
+      })?.show?.id,
+    ).toBe("show-later");
+
+    // Verify started pinned show also returns undefined
+    const startedInventory = new LiveInventoryService(fixture.fetcher, {
+      now: () => Date.parse("2026-11-18T00:00:00Z"),
+    });
+    await startedInventory.refresh();
+    const startedAdapter = new LiveStarCineplexAdapter(startedInventory);
+    expect(
+      startedAdapter.resolveMonitorTarget({
+        ...pinnedBase,
+        targetShowId: "show-open",
+      }),
+    ).toBeUndefined();
   });
 });

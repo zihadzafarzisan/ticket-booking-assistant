@@ -181,10 +181,13 @@ it("serves browser settings and routes connect/open to the regular-browser integ
       mode: "regular",
     }),
   };
-  let active = false;
+  let mockTasks: Array<{
+    status: string;
+    input?: { refreshBrowserPage?: boolean };
+  }> = [];
   const runner = {
     browser,
-    snapshot: () => ({ tasks: active ? [{ status: "selecting" }] : [] }),
+    snapshot: () => ({ tasks: mockTasks }),
   } as unknown as BotRunner;
   const { server } = createBotServer(runner, {
     credentials,
@@ -214,7 +217,7 @@ it("serves browser settings and routes connect/open to the regular-browser integ
       ).status,
     ).toBe(400);
     expect(browser.close).not.toHaveBeenCalled();
-    active = true;
+    mockTasks = [{ status: "selecting" }];
     expect(
       (
         await post("/api/settings/browser", {
@@ -222,7 +225,20 @@ it("serves browser settings and routes connect/open to the regular-browser integ
         })
       ).status,
     ).toBe(409);
-    active = false;
+    // B4: active monitoring task with refreshBrowserPage enabled must also block browser disconnect
+    mockTasks = [{ status: "monitoring", input: { refreshBrowserPage: true } }];
+    expect(
+      (
+        await post("/api/settings/browser", {
+          endpoint: "http://127.0.0.1:9222",
+        })
+      ).status,
+    ).toBe(409);
+    expect(browser.close).not.toHaveBeenCalled();
+    // Monitoring without browser refresh does not hold an active browser page
+    mockTasks = [
+      { status: "monitoring", input: { refreshBrowserPage: false } },
+    ];
     const saved = await post("/api/settings/browser", {
       endpoint: "http://127.0.0.1:9333",
     });

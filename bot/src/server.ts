@@ -164,8 +164,11 @@ export function createBotServer(
             if (
               runner
                 .snapshot()
-                .tasks.some((task) =>
-                  ["scanning", "selecting"].includes(task.status),
+                .tasks.some(
+                  (task) =>
+                    ["scanning", "selecting"].includes(task.status) ||
+                    (task.status === "monitoring" &&
+                      task.input?.refreshBrowserPage !== false),
                 )
             )
               throw new HttpError(

@@ -5,6 +5,8 @@ import {
   type TimeSlot,
 } from "../../packages/core/src";
 
+export { normalizeSeatLabel };
+
 export type TaskStatus =
   | "queued"
   | "scheduled"
@@ -229,7 +231,9 @@ export function validateTask(value: unknown): TaskInput {
     if (v[key] !== undefined && typeof v[key] !== "boolean")
       throw new Error(`Invalid ${key}.`);
   const exactSeatsOnly = v.exactSeatsOnly === true;
-  if (exactSeatsOnly && targetSeats.length > 0 && targetSeats.length < requiredSeats)
+  if (exactSeatsOnly && targetSeats.length === 0)
+    throw new Error("Exact seats only requires at least one target seat.");
+  if (exactSeatsOnly && targetSeats.length < requiredSeats)
     throw new Error(
       "Select at least as many exact seats as your seat count when exact seats only is enabled.",
     );

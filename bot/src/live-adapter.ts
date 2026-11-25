@@ -58,6 +58,12 @@ export class LiveStarCineplexAdapter extends StarCineplexAdapter {
     const live = this.inventory.snapshot();
     if (input.targetShowId) {
       const pinned = live.shows.find((show) => show.id === input.targetShowId);
+      if (
+        pinned &&
+        ["started", "closed", "counter_only"].includes(pinned.ticketStatus)
+      ) {
+        return undefined;
+      }
       return {
         url:
           pinned?.bookingUrl ||

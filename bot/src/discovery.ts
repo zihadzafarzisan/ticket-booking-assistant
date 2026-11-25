@@ -114,22 +114,28 @@ export class DiscoveryService {
           "The selected show is not currently available for this movie, date and seat count. Use Adjust search to unpin it or choose another show.",
         );
       }
-      if (!matchesLocation(selected, input.locationIds))
+      if (!matchesLocation(selected, input.locationIds)) {
+        if (input.mode === "monitor") return [];
         throw new Error(
           `The selected show is at ${selected.cinema.name}, but your branch filter excludes it. Use Adjust search to change the branch or unpin the show.`,
         );
+      }
       if (
         (input.preferredTimes.length &&
           !input.preferredTimes.includes(getTimeSlot(selected.time))) ||
         !matchesShowtime(selected, input.preferredShowtime)
-      )
+      ) {
+        if (input.mode === "monitor") return [];
         throw new Error(
           `The selected show starts at ${selected.time}, but your time filter excludes it. Use Adjust search to change the time filter or unpin the show.`,
         );
-      if (!matchesHall(selected, input.preferredHall))
+      }
+      if (!matchesHall(selected, input.preferredHall)) {
+        if (input.mode === "monitor") return [];
         throw new Error(
           `The selected show is in ${selected.hall.name}, but your hall filter excludes it. Use Adjust search to change the hall filter or unpin the show.`,
         );
+      }
     }
     const filtered = shows
       .map((show) =>

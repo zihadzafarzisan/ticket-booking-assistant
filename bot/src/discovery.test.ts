@@ -445,5 +445,54 @@ describe("standalone discovery", () => {
         r.showtime.hall.name.toLowerCase().includes(sampleHall.toLowerCase()),
       ),
     ).toBe(true);
+
+    // W2: in monitor mode, a pinned targetShowId conflicting with location/time/showtime/hall returns [] instead of throwing
+    expect(
+      await discovery.search(
+        {
+          ...input(),
+          mode: "monitor",
+          targetShowId: "demo-show-0",
+          locationIds: ["sony-square"],
+          preferredTimes: [],
+        },
+        new AbortController().signal,
+      ),
+    ).toEqual([]);
+    expect(
+      await discovery.search(
+        {
+          ...input(),
+          mode: "monitor",
+          targetShowId: "demo-show-0",
+          preferredTimes: ["afternoon"],
+        },
+        new AbortController().signal,
+      ),
+    ).toEqual([]);
+    expect(
+      await discovery.search(
+        {
+          ...input(),
+          mode: "monitor",
+          targetShowId: "demo-show-0",
+          preferredTimes: [],
+          preferredShowtime: "23:55",
+        },
+        new AbortController().signal,
+      ),
+    ).toEqual([]);
+    expect(
+      await discovery.search(
+        {
+          ...input(),
+          mode: "monitor",
+          targetShowId: "demo-show-0",
+          preferredTimes: [],
+          preferredHall: "Nonexistent Hall 99",
+        },
+        new AbortController().signal,
+      ),
+    ).toEqual([]);
   });
 });
