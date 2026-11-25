@@ -1,12 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type {
-  Activity,
-  BotTask,
-  Candidate,
-  Snapshot,
-  TaskInput,
-  TaskStatus,
-} from "../../bot/src/contracts";
+import type { Activity, TaskStatus } from "../../bot/src/contracts";
 import { Icon } from "./icons";
 import { api, subscribe } from "./api";
 import TaskForm from "./TaskForm";
@@ -16,7 +9,17 @@ import { CinemaSettings } from "./CinemaSettings";
 import MovieBooking, { type MovieBookingChoice } from "./MovieBooking";
 import type { LiveInventory } from "../../bot/src/live-types";
 import { explainMovieAvailability } from "../../bot/src/availability";
-import { TIME_SLOT_CONFIG } from "../../packages/core/src";
+import {
+  STAR_CINEPLEX_LOCATIONS,
+  TIME_SLOT_CONFIG,
+} from "../../packages/core/src";
+import type {
+  ExtendedBotTask,
+  ExtendedCandidate,
+  ExtendedSnapshot,
+  ExtendedTaskInput,
+  PageRefreshState,
+} from "./types";
 
 const statusLabels: Record<TaskStatus, string> = {
   queued: "Queued",
@@ -30,13 +33,53 @@ const statusLabels: Record<TaskStatus, string> = {
   stopped: "Stopped",
   error: "Needs a retry",
 };
+const pageRefreshLabels: Record<PageRefreshState, string> = {
+  idle: "Idle",
+  warming: "Warming cinema tab",
+  refreshing: "Refreshing live (1s)",
+  drop_detected: "Ticket drop detected",
+  selecting: "Locking exact seats",
+  handoff: "Handed off to checkout",
+  error: "Transient error (retrying)",
+};
 const running = ["queued", "scheduled", "scanning", "monitoring", "selecting"];
 const attention = ["awaiting_user", "awaiting_payment"];
+const alertStatuses: TaskStatus[] = ["awaiting_payment", "awaiting_user", "error"];
 const formatDate = (date: string) =>
-  new Date(`${date}T12:00:00`).toLocaleDateString("en-GB", {
+  new Date(`${date}T12:00:00+06:00`).toLocaleDateString("en-GB", {
     day: "numeric",
     month: "short",
+    timeZone: "Asia/Dhaka",
   });
+const formatDhakaTime = (iso?: string) =>
+  iso
+    ? new Date(iso).toLocaleTimeString("en-GB", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        timeZone: "Asia/Dhaka",
+      })
+    : "—";
+const playAlertChime = (kind: "awaiting_payment" | "awaiting_user" | "error") => {
+  try {
+    const ctx = new AudioContext();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    const freq =
+      kind === "awaiting_payment" ? 660 : kind === "awaiting_user" ? 520 : 330;
+    osc.frequency.setValueAtTime(freq, ctx.currentTime);
+    if (kind === "awaiting_payment") {
+      osc.frequency.setValueAtTime(880, ctx.currentTime + 0.14);
+    }
+    gain.gain.setValueAtTime(0.08, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.5);
+    osc.onended = () => void ctx.close();
+  } catch {}
+};
 const timeAgo = (time: string) => {
   const diff = Math.max(0, Date.now() - Date.parse(time));
   return diff < 60_000
@@ -128,7 +171,7 @@ function LogList({
 }
 
 export default function App() {
-  const [snapshot, setSnapshot] = useState<Snapshot>({
+  const [snapshot, setSnapshot] = useState<ExtendedSnapshot>({
     tasks: [],
     browser: { connected: false, pages: 0, headless: false },
     startedAt: new Date().toISOString(),
@@ -142,10 +185,10 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string>();
   const [showForm, setShowForm] = useState(false);
   const [inventory, setInventory] = useState<LiveInventory>();
-  const [missionSeed, setMissionSeed] = useState<Partial<TaskInput>>();
+  const [missionSeed, setMissionSeed] = useState<Partial<ExtendedTaskInput>>();
   const [bookingChoice, setBookingChoice] = useState<MovieBookingChoice>();
   const [editingTaskId, setEditingTaskId] = useState<string>();
-  const [inspecting, setInspecting] = useState<Candidate>();
+  const [inspecting, setInspecting] = useState<ExtendedCandidate>();
   const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState("");
   const [toast, setToast] = useState<{ message: string; error?: boolean }>();
@@ -155,9 +198,16 @@ export default function App() {
   const [sound, setSound] = useState(
     () => localStorage.getItem("cinebot:sound") === "1",
   );
-  const notified = useRef(new Set<string>());
+  const [notificationPermission, setNotificationPermission] = useState<
+    NotificationPermission | "unsupported"
+  >(() =>
+    typeof window !== "undefined" && "Notification" in window
+      ? Notification.permission
+      : "unsupported",
+  );
+  const notified = useRef(new Map<string, TaskStatus>());
   const latestSnapshot = useRef({ startedAt: "", seq: -1 });
-  const applySnapshot = (value: Snapshot) => {
+  const applySnapshot = (value: ExtendedSnapshot) => {
     const seq = value.seq ?? 0;
     if (
       value.startedAt === latestSnapshot.current.startedAt &&
@@ -180,16 +230,45 @@ export default function App() {
       .then((value) => {
         if (mounted) setInventory(value);
       })
-      .catch(() => {});
-    api<Snapshot>("/state")
+      .catch((error) => {
+        if (mounted) {
+          setInventory(
+            (prev) =>
+              prev ?? {
+                status: "error",
+                refreshing: false,
+                refreshIntervalSeconds: 30,
+                sourceUrl: "https://starcineplex.com/showtimes",
+                error:
+                  (error as Error).message ||
+                  "Could not reach Star Cineplex live inventory.",
+                warnings: [],
+                movies: [],
+                branches: [],
+                shows: [],
+                halls: [],
+                changes: [],
+                counts: {
+                  nowShowingMovies: 0,
+                  openShows: 0,
+                  hallsWithOpenTickets: 0,
+                  reportedAvailableSeats: 0,
+                },
+              },
+          );
+        }
+      });
+    api<ExtendedSnapshot>("/state")
       .then((value) => {
         if (mounted) {
           applySnapshot(value);
           setConnected(true);
           setLoading(false);
-          for (const task of value.tasks)
-            if (task.status === "awaiting_payment")
-              notified.current.add(task.id);
+          for (const task of value.tasks) {
+            if (alertStatuses.includes(task.status)) {
+              notified.current.set(task.id, task.status);
+            }
+          }
         }
       })
       .catch((error) => {
@@ -201,41 +280,67 @@ export default function App() {
     const close = subscribe(
       (value) => {
         if (!mounted) return;
-        for (const task of value.tasks)
+        const activeIds = new Set(value.tasks.map((t) => t.id));
+        for (const id of notified.current.keys()) {
+          if (!activeIds.has(id)) notified.current.delete(id);
+        }
+        for (const task of value.tasks) {
+          if (running.includes(task.status)) {
+            notified.current.delete(task.id);
+            continue;
+          }
           if (
-            task.status === "awaiting_payment" &&
-            !notified.current.has(task.id)
+            alertStatuses.includes(task.status) &&
+            notified.current.get(task.id) !== task.status
           ) {
-            notified.current.add(task.id);
-            setToast({
-              message: `${task.input.movieName}: checkout is ready.`,
-            });
-            if (
-              "Notification" in window &&
-              Notification.permission === "granted"
-            )
-              new Notification("Your movie seats are ready", {
-                body: `Complete payment for ${task.input.movieName} in the cinema browser.`,
+            notified.current.set(task.id, task.status);
+            const acquiredSeats =
+              task.results.find((r) => r.handoff?.selectedSeats?.length)
+                ?.handoff?.selectedSeats || [];
+            if (task.status === "awaiting_payment") {
+              const seatText = acquiredSeats.length
+                ? `Seats ${acquiredSeats.join(", ")} locked — `
+                : "";
+              setToast({
+                message: `${task.input.movieName}: ${seatText}checkout is ready.`,
               });
-            if (soundRef.current) {
-              try {
-                const ctx = new AudioContext();
-                const osc = ctx.createOscillator();
-                const gain = ctx.createGain();
-                osc.connect(gain);
-                gain.connect(ctx.destination);
-                osc.frequency.value = 660;
-                gain.gain.setValueAtTime(0.08, ctx.currentTime);
-                gain.gain.exponentialRampToValueAtTime(
-                  0.001,
-                  ctx.currentTime + 0.5,
-                );
-                osc.start();
-                osc.stop(ctx.currentTime + 0.5);
-                osc.onended = () => void ctx.close();
-              } catch {}
+              if (
+                "Notification" in window &&
+                Notification.permission === "granted"
+              )
+                new Notification("Your movie seats are ready", {
+                  body: `${seatText}Complete payment for ${task.input.movieName} in the cinema browser.`,
+                });
+              if (soundRef.current) playAlertChime("awaiting_payment");
+            } else if (task.status === "awaiting_user") {
+              setToast({
+                message: `${task.input.movieName}: action needed in cinema browser (login, OTP, or CAPTCHA).`,
+                error: true,
+              });
+              if (
+                "Notification" in window &&
+                Notification.permission === "granted"
+              )
+                new Notification("Cinema browser needs attention", {
+                  body: `Finish login, OTP, or checkout verification for ${task.input.movieName}.`,
+                });
+              if (soundRef.current) playAlertChime("awaiting_user");
+            } else if (task.status === "error") {
+              setToast({
+                message: `${task.input.movieName}: ${task.error || "mission needs a retry."}`,
+                error: true,
+              });
+              if (
+                "Notification" in window &&
+                Notification.permission === "granted"
+              )
+                new Notification("Cinebot mission error", {
+                  body: `${task.input.movieName}: ${task.error || "Needs a retry."}`,
+                });
+              if (soundRef.current) playAlertChime("error");
             }
           }
+        }
         applySnapshot(value);
         setLoading(false);
       },
@@ -297,37 +402,53 @@ export default function App() {
     setQuery("");
     setFilter("all");
   };
-  const openTask = (task: BotTask) => {
+  const openTask = (task: ExtendedBotTask) => {
     setSelectedId(task.id);
     setPage("detail");
   };
-  const action = async (path: string, body: unknown = {}, success?: string) => {
+  const action = async (
+    path: string,
+    body: unknown = {},
+    success?: string,
+  ): Promise<boolean> => {
     setBusy(path);
+    const taskActionMatch = /^\/tasks\/([^/]+)\/(resume|reserve|check)$/.exec(
+      path,
+    );
+    if (taskActionMatch) {
+      notified.current.delete(taskActionMatch[1]);
+    }
     try {
       await api(path, body);
-      const state = await api<Snapshot>("/state");
+      const state = await api<ExtendedSnapshot>("/state");
       applySnapshot(state);
       if (success) setToast({ message: success });
+      return true;
     } catch (error) {
       setToast({ message: (error as Error).message, error: true });
+      return false;
     } finally {
       setBusy("");
     }
   };
-  const createTask = async (input: TaskInput) => {
+  const createTask = async (input: ExtendedTaskInput) => {
     setCreating(true);
     try {
-      const task = await api<BotTask>(
+      if (editingTaskId) {
+        notified.current.delete(editingTaskId);
+      }
+      const task = await api<ExtendedBotTask>(
         editingTaskId ? `/tasks/${editingTaskId}/update` : "/tasks",
         input,
       );
+      notified.current.delete(task.id);
       setShowForm(false);
       setBookingChoice(undefined);
       setMissionSeed(undefined);
       setEditingTaskId(undefined);
       setSelectedId(task.id);
       setPage("detail");
-      applySnapshot(await api<Snapshot>("/state"));
+      applySnapshot(await api<ExtendedSnapshot>("/state"));
       setToast({
         message:
           input.mode === "monitor"
@@ -344,7 +465,22 @@ export default function App() {
       {},
       "Cinema tab opened in your regular browser.",
     );
-  const TaskRow = ({ task }: { task: BotTask }) => (
+  const resolveBranchNames = (ids: string[]) => {
+    if (!ids.length) return "All supported branches";
+    return ids
+      .map((id) => {
+        const liveMatch = inventory?.branches.find(
+          (branch) => branch.locationId === id || branch.id === id,
+        );
+        if (liveMatch) return liveMatch.name;
+        const staticMatch = STAR_CINEPLEX_LOCATIONS.find(
+          (loc) => loc.id === id,
+        );
+        return staticMatch?.shortName || id;
+      })
+      .join(", ");
+  };
+  const TaskRow = ({ task }: { task: ExtendedBotTask }) => (
     <button
       className={`task-row ${selectedId === task.id ? "is-selected" : ""}`}
       onClick={() => openTask(task)}
@@ -356,6 +492,11 @@ export default function App() {
           {task.input.mode === "monitor" ? "Drop monitor" : "Instant search"}{" "}
           <b>·</b> {formatDate(task.input.targetDate)} <b>·</b>{" "}
           {task.input.requiredSeats} seats{" "}
+          {task.input.targetSeats?.length ? (
+            <>
+              <b>·</b> {task.input.targetSeats.join(", ")}{" "}
+            </>
+          ) : null}
           {task.input.source === "demo" && <em>DEMO</em>}
         </span>
       </div>
@@ -464,9 +605,11 @@ export default function App() {
             <strong>
               {page === "cinema"
                 ? "Live Cineplex"
-                : page === "detail"
-                  ? "Mission details"
-                  : page[0].toUpperCase() + page.slice(1)}
+                : page === "tasks"
+                  ? "Missions"
+                  : page === "detail"
+                    ? "Mission details"
+                    : page[0].toUpperCase() + page.slice(1)}
             </strong>
           </div>
           <div className="topbar-right">
@@ -475,12 +618,19 @@ export default function App() {
             />
             <button
               className="browser-link"
-              disabled={!!busy}
+              disabled={!!busy || !connected}
+              title={
+                snapshot.browser.connected
+                  ? "Open or focus a cinema tab in your connected browser."
+                  : "Opens your regular Chrome or Edge browser with a persistent Star Cineplex session. Click Allow if Chrome prompts for remote debugging."
+              }
               onClick={openBrowser}
             >
-              {snapshot.browser.connected
-                ? "Browser connected"
-                : "Open cinema browser"}
+              {busy === "/browser/open"
+                ? "Opening browser…"
+                : snapshot.browser.connected
+                  ? "Browser connected"
+                  : "Open cinema browser"}
               <Icon name="external" size={13} />
             </button>
             <span className="topbar-divider" />
@@ -985,6 +1135,219 @@ export default function App() {
                   </strong>
                 </div>
               </section>
+              {(() => {
+                const handoffResult =
+                  selected.results.find(
+                    (r) =>
+                      r.handoff?.status === "awaiting_payment" ||
+                      r.handoff?.selectedSeats?.length,
+                  ) || selected.results.find((r) => r.handoff);
+                const acquiredSeats =
+                  handoffResult?.handoff?.selectedSeats || [];
+                const isLiveRefreshing =
+                  running.includes(selected.status) &&
+                  selected.status !== "scheduled";
+                const refreshState: PageRefreshState =
+                  selected.pageRefreshState ||
+                  (selected.status === "awaiting_payment" ||
+                  selected.status === "awaiting_user"
+                    ? "handoff"
+                    : selected.status === "selecting"
+                      ? "selecting"
+                      : selected.status === "error"
+                        ? "error"
+                        : isLiveRefreshing
+                          ? "refreshing"
+                          : "idle");
+                const heartbeatAgeMs = selected.lastCheckAt
+                  ? Math.max(0, clock - Date.parse(selected.lastCheckAt))
+                  : undefined;
+                return (
+                  <section
+                    className={`sniper-monitor-panel state-${refreshState}`}
+                    data-testid="sniper-monitor-panel"
+                    aria-label="Live sniper telemetry"
+                  >
+                    <div className="sniper-header">
+                      <div className="sniper-heartbeat">
+                        <span
+                          className={`heartbeat-dot ${isLiveRefreshing ? "pulsing" : ""} state-${refreshState}`}
+                        />
+                        <div>
+                          <strong>
+                            {selected.input.mode === "monitor"
+                              ? `${selected.input.intervalSeconds}s Drop Sniper Telemetry`
+                              : "Seat Acquisition Telemetry"}
+                          </strong>
+                          <span>
+                            {selected.input.refreshBrowserPage
+                              ? "Live Cineplex tab + API refresh"
+                              : "Live API polling"}
+                            {" · "}
+                            Every {selected.input.intervalSeconds}s
+                            {selected.dropDetectedAt && (
+                              <>
+                                {" · "}
+                                <em className="drop-badge">
+                                  Drop detected{" "}
+                                  {formatDhakaTime(selected.dropDetectedAt)}
+                                </em>
+                              </>
+                            )}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="sniper-badges">
+                        {!!selected.consecutiveErrors &&
+                          selected.consecutiveErrors > 0 && (
+                            <span className="sniper-error-pill">
+                              {selected.consecutiveErrors} transient error
+                              {selected.consecutiveErrors === 1 ? "" : "s"}
+                            </span>
+                          )}
+                        <span
+                          className={`sniper-state-pill state-${refreshState}`}
+                          data-testid="sniper-page-refresh-state"
+                        >
+                          {pageRefreshLabels[refreshState]}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="sniper-metrics">
+                      <div className="sniper-metric">
+                        <span>CHECKS</span>
+                        <strong data-testid="sniper-check-count">
+                          {selected.checks}
+                        </strong>
+                        <small>
+                          {selected.lastCheckAt
+                            ? `Last ${formatDhakaTime(selected.lastCheckAt)}${heartbeatAgeMs !== undefined && isLiveRefreshing ? ` (${Math.floor(heartbeatAgeMs / 1000)}s ago)` : ""}`
+                            : "Waiting for first check"}
+                        </small>
+                      </div>
+                      <div className="sniper-metric">
+                        <span>LATENCY</span>
+                        <strong data-testid="sniper-latency-ms">
+                          {selected.lastCheckLatencyMs !== undefined
+                            ? `${Math.round(selected.lastCheckLatencyMs)} ms`
+                            : "—"}
+                        </strong>
+                        <small>
+                          {selected.nextCheckAt && isLiveRefreshing
+                            ? `Next tick in ${Math.max(0, Math.ceil((Date.parse(selected.nextCheckAt) - clock) / 1000))}s`
+                            : "Dhaka time"}
+                        </small>
+                      </div>
+                      <div className="sniper-metric">
+                        <span>PAGE REFRESHES</span>
+                        <strong data-testid="sniper-page-refresh-count">
+                          {selected.pageRefreshCount ?? 0}
+                        </strong>
+                        <small>
+                          {selected.lastPageRefreshAt
+                            ? `Tab ${formatDhakaTime(selected.lastPageRefreshAt)}`
+                            : selected.input.refreshBrowserPage
+                              ? "Arms once show URL is live"
+                              : "Tab refresh off"}
+                        </small>
+                      </div>
+                      <div className="sniper-metric">
+                        <span>BRANCHES</span>
+                        <strong className="sniper-branch-text">
+                          {resolveBranchNames(selected.input.locationIds)}
+                        </strong>
+                        <small>
+                          {selected.input.preferredCategory !== "any"
+                            ? `${selected.input.preferredCategory} tier · `
+                            : ""}
+                          {selected.input.rowPreference} rows
+                        </small>
+                      </div>
+                    </div>
+
+                    <div className="sniper-seats-row">
+                      <div
+                        className="sniper-seat-group"
+                        data-testid="sniper-target-seats"
+                      >
+                        <span className="sniper-seat-label">TARGET SEATS</span>
+                        {selected.input.targetSeats?.length ? (
+                          <div className="sniper-chips">
+                            {selected.input.targetSeats.map((seat) => (
+                              <span className="seat-chip target" key={seat}>
+                                {seat}
+                              </span>
+                            ))}
+                            <span className="policy-chip">
+                              {selected.input.exactSeatsOnly
+                                ? "Exact seats only"
+                                : "Fallback contiguous"}
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="sniper-seat-empty">
+                            Best available in{" "}
+                            {selected.input.allowedRows.length
+                              ? `rows ${selected.input.allowedRows.join(", ")}`
+                              : "any row"}
+                          </span>
+                        )}
+                      </div>
+
+                      {(acquiredSeats.length > 0 ||
+                        attention.includes(selected.status)) && (
+                        <div
+                          className={`sniper-handoff-banner ${selected.status === "awaiting_payment" ? "payment" : "attention"}`}
+                        >
+                          <div
+                            className="sniper-seat-group"
+                            data-testid="sniper-acquired-seats"
+                          >
+                            <span className="sniper-seat-label">
+                              {selected.status === "awaiting_payment"
+                                ? "ACQUIRED SEATS · READY FOR PAYMENT"
+                                : "BROWSER ACTION NEEDED"}
+                            </span>
+                            {acquiredSeats.length > 0 ? (
+                              <div className="sniper-chips">
+                                {acquiredSeats.map((seat) => (
+                                  <span
+                                    className="seat-chip acquired"
+                                    key={seat}
+                                  >
+                                    {seat}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : (
+                              <span className="sniper-seat-empty">
+                                {handoffResult?.handoff?.message ||
+                                  "Complete login, OTP, or CAPTCHA in the cinema browser."}
+                              </span>
+                            )}
+                          </div>
+                          {handoffResult && !handoffResult.simulated && (
+                            <button
+                              type="button"
+                              className="button primary compact"
+                              disabled={!!busy}
+                              onClick={() =>
+                                void action(`/tasks/${selected.id}/focus`, {
+                                  key: handoffResult.key,
+                                })
+                              }
+                            >
+                              <Icon name="external" size={13} />
+                              Focus payment tab
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </section>
+                );
+              })()}
               {selected.status === "selecting" && !snapshot.browser.connected && (
                 <div className="schedule-notice" role="status">
                   <Icon name="browser" size={20} />
@@ -1239,7 +1602,9 @@ export default function App() {
                           `/tasks/${selected.id}/remove`,
                           {},
                           "Mission removed.",
-                        ).then(() => navigate("tasks"));
+                        ).then((ok) => {
+                          if (ok) navigate("tasks");
+                        });
                       }}
                     >
                       <Icon name="trash" size={14} />
@@ -1266,7 +1631,7 @@ export default function App() {
               <CinemaSettings
                 browser={snapshot.browser}
                 onChanged={async () =>
-                  applySnapshot(await api<Snapshot>("/state"))
+                  applySnapshot(await api<ExtendedSnapshot>("/state"))
                 }
               />
               <section className="panel settings-card">
@@ -1303,12 +1668,26 @@ export default function App() {
                 <div className="setting-line">
                   <div>
                     <strong>Desktop notifications</strong>
-                    <p>Alerts while this dashboard is open.</p>
+                    <p>
+                      {notificationPermission === "granted"
+                        ? "Enabled for seat locks, login prompts, and errors."
+                        : notificationPermission === "denied"
+                          ? "Blocked in browser settings. Allow notifications for this site to re-enable."
+                          : notificationPermission === "unsupported"
+                            ? "This browser does not support desktop notifications."
+                            : "Alerts while this dashboard is open."}
+                    </p>
                   </div>
                   <button
                     className="button secondary compact"
+                    disabled={
+                      notificationPermission === "granted" ||
+                      notificationPermission === "denied" ||
+                      notificationPermission === "unsupported"
+                    }
                     onClick={() => {
                       if (!("Notification" in window)) {
+                        setNotificationPermission("unsupported");
                         setToast({
                           message:
                             "This browser does not support desktop notifications.",
@@ -1316,18 +1695,25 @@ export default function App() {
                         });
                         return;
                       }
-                      void Notification.requestPermission().then((value) =>
+                      void Notification.requestPermission().then((value) => {
+                        setNotificationPermission(value);
                         setToast({
                           message:
                             value === "granted"
                               ? "Notifications enabled."
                               : "Notifications were not enabled.",
                           error: value !== "granted",
-                        }),
-                      );
+                        });
+                      });
                     }}
                   >
-                    Enable
+                    {notificationPermission === "granted"
+                      ? "Enabled"
+                      : notificationPermission === "denied"
+                        ? "Blocked"
+                        : notificationPermission === "unsupported"
+                          ? "Unsupported"
+                          : "Enable"}
                   </button>
                 </div>
               </section>
@@ -1382,6 +1768,7 @@ export default function App() {
       {showForm && (
         <TaskForm
           busy={creating}
+          connected={connected}
           initial={missionSeed}
           editing={!!editingTaskId}
           pinnedShow={inventory?.shows.find(
@@ -1406,6 +1793,7 @@ export default function App() {
       )}
       {toast && (
         <div
+          data-testid="handoff-toast"
           className={`toast ${toast.error ? "error" : ""}`}
           role={toast.error ? "alert" : "status"}
         >
