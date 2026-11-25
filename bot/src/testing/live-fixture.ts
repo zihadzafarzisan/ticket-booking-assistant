@@ -201,6 +201,10 @@ export interface CineplexPageFixtureOptions {
   rows?: string[];
   seatsPerRow?: number;
   occupiedSeats?: string[];
+  /** Seats that stay occupied until the 1-based page load/refresh count reaches `freeAfterRefresh` */
+  occupiedSeatsUntilRefresh?: { seats: string[]; freeAfterRefresh: number };
+  /** Render seats as SVG `<g>` elements with prefixed classes (e.g. `seat-node seat-booked`) */
+  useSvgSeats?: boolean;
   /** Seat labels that become occupied mid-click when clicked (triggers atomic rollback tests) */
   stealSeatsOnClick?: string[];
   /** Simulate React full-list DOM re-render on every seat click */
@@ -249,12 +253,22 @@ export function createCineplexPageFixture(
 </html>`;
 
   const renderSeatMapHtml = () => {
+    const effectiveOccupied = new Set(occupied);
+    if (
+      options.occupiedSeatsUntilRefresh &&
+      state.loads < options.occupiedSeatsUntilRefresh.freeAfterRefresh
+    ) {
+      for (const label of options.occupiedSeatsUntilRefresh.seats) {
+        effectiveOccupied.add(label.trim().toUpperCase());
+      }
+    }
     const config = JSON.stringify({
       rows,
       seatsPerRow,
-      occupied: [...occupied],
+      occupied: [...effectiveOccupied],
       stealOnClick: [...stealOnClick],
       rerenderOnClick: options.rerenderOnClick === true,
+      useSvgSeats: options.useSvgSeats === true,
     });
     return `<!doctype html>
 <html>
@@ -282,9 +296,85 @@ export function createCineplexPageFixture(
         const seats = Array.from(selected).join(",");
         location.href = "/checkout?seats=" + encodeURIComponent(seats);
       }
+      function handleSeatToggle(label, updateSingle) {
+        if (occupied.has(label)) return;
+        if (stealOnClick.has(label)) {
+          stealOnClick.delete(label);
+          occupied.add(label);
+          selected.delete(label);
+          showAlert("Seat " + label + " is already booked and no longer available.");
+          render();
+          updateCheckoutButton();
+          return;
+        }
+        if (selected.has(label)) {
+          selected.delete(label);
+        } else {
+          selected.add(label);
+        }
+        if (cfg.rerenderOnClick) {
+          render();
+        } else if (updateSingle) {
+          updateSingle();
+        }
+        updateCheckoutButton();
+      }
+      function renderSvgMap(map) {
+        const SVG_NS = "http://www.w3.org/2000/svg";
+        const svg = document.createElementNS(SVG_NS, "svg");
+        svg.setAttribute("width", String(cfg.seatsPerRow * 38 + 20));
+        svg.setAttribute("height", String(cfg.rows.length * 40 + 20));
+        for (let r = 0; r < cfg.rows.length; r++) {
+          const row = cfg.rows[r];
+          for (let n = 1; n <= cfg.seatsPerRow; n++) {
+            const label = row + n;
+            const g = document.createElementNS(SVG_NS, "g");
+            const applySvgClass = () => {
+              const cls = occupied.has(label)
+                ? "seat-node seat-booked"
+                : selected.has(label)
+                  ? "seat-node seat-selected"
+                  : "seat-node seat-available";
+              g.setAttribute("class", cls);
+            };
+            applySvgClass();
+            g.setAttribute("data-seat", label);
+            g.setAttribute("data-category", "premium");
+            g.setAttribute("transform", "translate(" + ((n - 1) * 38 + 8) + "," + (r * 40 + 8) + ")");
+            g.style.cursor = occupied.has(label) ? "not-allowed" : "pointer";
+            const rect = document.createElementNS(SVG_NS, "rect");
+            rect.setAttribute("width", "32");
+            rect.setAttribute("height", "32");
+            rect.setAttribute("rx", "4");
+            rect.setAttribute("fill", occupied.has(label) ? "#555" : selected.has(label) ? "#2563eb" : "#16a34a");
+            const text = document.createElementNS(SVG_NS, "text");
+            text.setAttribute("x", "16");
+            text.setAttribute("y", "20");
+            text.setAttribute("text-anchor", "middle");
+            text.setAttribute("fill", "#fff");
+            text.setAttribute("font-size", "11");
+            text.textContent = label;
+            g.appendChild(rect);
+            g.appendChild(text);
+            g.addEventListener("click", () => {
+              handleSeatToggle(label, () => {
+                applySvgClass();
+                rect.setAttribute("fill", selected.has(label) ? "#2563eb" : "#16a34a");
+              });
+            });
+            svg.appendChild(g);
+          }
+        }
+        map.appendChild(svg);
+      }
       function render() {
         const map = document.getElementById("seat-map");
         map.innerHTML = "";
+        if (cfg.useSvgSeats) {
+          renderSvgMap(map);
+          updateCheckoutButton();
+          return;
+        }
         for (const row of cfg.rows) {
           const rowEl = document.createElement("div");
           rowEl.style.cssText = "display:flex;gap:6px;margin-bottom:6px";
@@ -312,31 +402,13 @@ export function createCineplexPageFixture(
               if (selected.has(label)) btn.classList.add("selected");
             }
             btn.onclick = () => {
-              if (occupied.has(label)) return;
-              if (stealOnClick.has(label)) {
-                stealOnClick.delete(label);
-                occupied.add(label);
-                selected.delete(label);
-                showAlert("Seat " + label + " is already booked and no longer available.");
-                render();
-                updateCheckoutButton();
-                return;
-              }
-              if (selected.has(label)) {
-                selected.delete(label);
-              } else {
-                selected.add(label);
-              }
-              if (cfg.rerenderOnClick) {
-                render();
-              } else {
+              handleSeatToggle(label, () => {
                 const isSel = selected.has(label);
                 btn.setAttribute("aria-selected", isSel ? "true" : "false");
                 btn.setAttribute("data-seat-state", isSel ? "selected" : "available");
                 btn.setAttribute("aria-label", "Row " + row + " seat " + label + (isSel ? ", selected" : ", available"));
                 btn.classList.toggle("selected", isSel);
-              }
-              updateCheckoutButton();
+              });
             };
             rowEl.appendChild(btn);
           }
