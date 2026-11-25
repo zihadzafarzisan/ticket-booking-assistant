@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { BrowserStatus, CredentialStatus } from "../../bot/src/contracts";
 import { api } from "./api";
 import { Icon } from "./icons";
@@ -19,6 +19,7 @@ export function CinemaSettings({
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [remember, setRemember] = useState(false);
+  const dirty = useRef({ endpoint: false, email: false, remember: false });
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState<{ text: string; error?: boolean }>();
   useEffect(() => {
@@ -27,9 +28,9 @@ export function CinemaSettings({
       .then((value) => {
         if (!active) return;
         setSettings(value);
-        setEndpoint(value.browser.endpoint);
-        setEmail(value.credentials.email);
-        setRemember(value.credentials.remembered);
+        if (!dirty.current.endpoint) setEndpoint(value.browser.endpoint);
+        if (!dirty.current.email) setEmail(value.credentials.email);
+        if (!dirty.current.remember) setRemember(value.credentials.remembered);
       })
       .catch((error) => {
         if (active) setNotice({ text: error.message, error: true });
@@ -126,7 +127,10 @@ export function CinemaSettings({
             type="url"
             required
             value={endpoint}
-            onChange={(event) => setEndpoint(event.target.value)}
+            onChange={(event) => {
+              dirty.current.endpoint = true;
+              setEndpoint(event.target.value);
+            }}
           />
           <button className="button secondary" disabled={!!busy || !settings}>
             {busy === "connect" ? "Connecting…" : "Connect existing browser"}
@@ -212,7 +216,10 @@ export function CinemaSettings({
             autoComplete="username"
             required
             value={email}
-            onChange={(event) => setEmail(event.target.value)}
+            onChange={(event) => {
+              dirty.current.email = true;
+              setEmail(event.target.value);
+            }}
           />
           <label htmlFor="cinema-password">Cineplex password</label>
           <input
@@ -234,7 +241,10 @@ export function CinemaSettings({
               <input
                 type="checkbox"
                 checked={remember}
-                onChange={(event) => setRemember(event.target.checked)}
+                onChange={(event) => {
+                  dirty.current.remember = true;
+                  setRemember(event.target.checked);
+                }}
               />
               Remember on this Windows account (encrypted)
             </label>
