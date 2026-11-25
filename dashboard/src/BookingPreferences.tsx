@@ -62,7 +62,24 @@ export default function BookingPreferences({
           </button>
         </div>
         <div className="row-choices">
-          {["A", "B", "C", "D", "E", "F", "G", "H", "J", "K", "L", "M", "N"]
+          {[
+            "A",
+            "B",
+            "C",
+            "D",
+            "E",
+            "F",
+            "G",
+            "H",
+            "I",
+            "J",
+            "K",
+            "L",
+            "M",
+            "N",
+            "O",
+            "P",
+          ]
             .concat(allowedRows)
             .filter((row, index, rows) => rows.indexOf(row) === index)
             .map((row) => (

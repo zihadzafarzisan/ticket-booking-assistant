@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { STAR_CINEPLEX_LOCATIONS } from "../../packages/core/src";
-import type { TaskInput } from "../../bot/src/contracts";
 import type {
   LiveMovie,
   LiveBranch,
@@ -10,12 +9,22 @@ import type {
 import { explainMovieAvailability } from "../../bot/src/availability";
 import { Icon } from "./icons";
 import BookingPreferences from "./BookingPreferences";
+import ExactSeatPicker from "./ExactSeatPicker";
+import {
+  SEAT_CATEGORY_OPTIONS,
+  parseLocalDateTimeInput,
+  toLocalDateTimeInput,
+  type ExtendedTaskInput,
+} from "./types";
+
 export const today = () =>
   new Date(Date.now() + 6 * 3600_000).toISOString().slice(0, 10);
+
 export default function TaskForm({
   onClose,
   onCreate,
   busy,
+  connected = true,
   initial,
   movies,
   branches,
@@ -24,9 +33,10 @@ export default function TaskForm({
   inventory,
 }: {
   onClose: () => void;
-  onCreate: (input: TaskInput) => Promise<void>;
+  onCreate: (input: ExtendedTaskInput) => Promise<void>;
   busy: boolean;
-  initial?: Partial<TaskInput>;
+  connected?: boolean;
+  initial?: Partial<ExtendedTaskInput>;
   movies?: LiveMovie[];
   branches?: LiveBranch[];
   editing?: boolean;
@@ -34,12 +44,14 @@ export default function TaskForm({
   inventory?: LiveInventory;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
-  const [form, setForm] = useState<TaskInput>({
+  const initialMode = initial?.mode ?? "instant";
+  const initialSource = initial?.source ?? "live";
+  const [form, setForm] = useState<ExtendedTaskInput>({
     movieName: "",
     targetDate: today(),
     requiredSeats: 2,
-    mode: "instant",
-    source: "live",
+    mode: initialMode,
+    source: initialSource,
     intervalSeconds: 1,
     allowedRows: ["B", "C", "D", "E", "F"],
     preferredTimes: ["afternoon", "evening"],
@@ -55,21 +67,31 @@ export default function TaskForm({
     keepTogether: true,
     autoReserve: true,
     openPaymentGateway: true,
+    targetSeats: [],
+    exactSeatsOnly: false,
+    refreshBrowserPage:
+      initial?.refreshBrowserPage ??
+      (initialMode === "monitor" && initialSource === "live"),
     ...initial,
   });
+  const [seatCountText, setSeatCountText] = useState(() =>
+    String(initial?.requiredSeats ?? 2),
+  );
+  const [refreshTouched, setRefreshTouched] = useState(
+    initial?.refreshBrowserPage !== undefined,
+  );
   const branchChoices = branches?.length
     ? branches
         .filter((branch) => branch.active)
         .map((branch) => ({ id: branch.locationId, shortName: branch.name }))
     : STAR_CINEPLEX_LOCATIONS;
-  const [schedule, setSchedule] = useState(() => {
-    if (!initial?.scheduledAt) return "";
-    const date = new Date(initial.scheduledAt);
-    date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
-    return date.toISOString().slice(0, 16);
-  });
+  const [schedule, setSchedule] = useState(() =>
+    initial?.scheduledAt ? toLocalDateTimeInput(initial.scheduledAt) : "",
+  );
   const [advanced, setAdvanced] = useState(false);
   const [error, setError] = useState("");
+  const minSchedule = toLocalDateTimeInput(new Date());
+
   const availability =
     form.source === "live" &&
     inventory?.status === "live" &&
@@ -81,25 +103,38 @@ export default function TaskForm({
           form,
         )
       : undefined;
+
   useEffect(() => {
     dialog.current?.showModal();
   }, []);
-  const update = <K extends keyof TaskInput>(key: K, value: TaskInput[K]) =>
-    setForm((prev) => ({
-      ...prev,
-      [key]: value,
-      ...(key === "movieName" ? { targetMovieId: undefined } : {}),
-      ...([
-        "movieName",
-        "targetDate",
-        "source",
-        "locationIds",
-        "preferredTimes",
-        "strategy",
-      ].includes(key)
-        ? { targetShowId: undefined }
-        : {}),
-    }));
+
+  const update = <K extends keyof ExtendedTaskInput>(
+    key: K,
+    value: ExtendedTaskInput[K],
+  ) =>
+    setForm((prev) => {
+      const next: ExtendedTaskInput = {
+        ...prev,
+        [key]: value,
+        ...(key === "movieName" ? { targetMovieId: undefined } : {}),
+        ...([
+          "movieName",
+          "targetDate",
+          "source",
+          "locationIds",
+          "preferredTimes",
+          "strategy",
+        ].includes(key as string)
+          ? { targetShowId: undefined }
+          : {}),
+      };
+      if ((key === "mode" || key === "source") && !refreshTouched) {
+        next.refreshBrowserPage =
+          next.mode === "monitor" && next.source === "live";
+      }
+      return next;
+    });
+
   const toggle = (
     key: "allowedRows" | "locationIds" | "preferredTimes",
     value: string,
@@ -113,21 +148,104 @@ export default function TaskForm({
         ? { targetShowId: undefined }
         : {}),
     }));
+
+  const handleSeatCountChange = (raw: string) => {
+    setSeatCountText(raw);
+    if (/^\d+$/.test(raw)) {
+      const parsed = Number.parseInt(raw, 10);
+      if (parsed >= 1 && parsed <= 50) {
+        update("requiredSeats", parsed);
+      }
+    }
+  };
+
+  const handleSeatCountBlur = () => {
+    const parsed = Number.parseInt(seatCountText, 10);
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > 50) {
+      setSeatCountText(String(form.requiredSeats));
+    } else {
+      setSeatCountText(String(parsed));
+      update("requiredSeats", parsed);
+    }
+  };
+
+  const handleTargetSeatsChange = (seats: string[]) => {
+    setForm((prev) => ({
+      ...prev,
+      targetSeats: seats,
+      ...(seats.length > 0 ? { requiredSeats: seats.length } : {}),
+    }));
+    if (seats.length > 0) {
+      setSeatCountText(String(seats.length));
+    }
+  };
+
+  const handleExactSeatsOnlyChange = (exactOnly: boolean) => {
+    setForm((prev) => {
+      const targetCount = prev.targetSeats?.length ?? 0;
+      const shouldClamp =
+        exactOnly && targetCount > 0 && prev.requiredSeats > targetCount;
+      if (shouldClamp) {
+        setSeatCountText(String(targetCount));
+      }
+      return {
+        ...prev,
+        exactSeatsOnly: exactOnly,
+        ...(shouldClamp ? { requiredSeats: targetCount } : {}),
+      };
+    });
+  };
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
+    if (!connected) {
+      setError("The dashboard is disconnected from the local bot service.");
+      return;
+    }
+    const parsedCount = Number.parseInt(seatCountText, 10);
+    if (
+      !seatCountText.trim() ||
+      !Number.isInteger(parsedCount) ||
+      parsedCount < 1 ||
+      parsedCount > 50
+    ) {
+      setError("Choose between 1 and 50 seats.");
+      return;
+    }
+    const targetSeats = form.targetSeats?.length ? form.targetSeats : undefined;
+    if (
+      form.exactSeatsOnly &&
+      targetSeats &&
+      targetSeats.length < parsedCount
+    ) {
+      setError(
+        `Exact seats only requires at least ${parsedCount} selected seat${parsedCount === 1 ? "" : "s"}.`,
+      );
+      return;
+    }
+    let scheduledAt: string | undefined;
+    if (form.mode === "monitor" && schedule.trim()) {
+      scheduledAt = parseLocalDateTimeInput(schedule);
+      if (!scheduledAt) {
+        setError("Choose a valid start date and time.");
+        return;
+      }
+    }
     try {
       await onCreate({
         ...form,
-        scheduledAt:
-          form.mode === "monitor" && schedule
-            ? new Date(schedule).toISOString()
-            : undefined,
+        requiredSeats: parsedCount,
+        targetSeats,
+        exactSeatsOnly: Boolean(form.exactSeatsOnly),
+        refreshBrowserPage: Boolean(form.refreshBrowserPage),
+        scheduledAt,
       });
-    } catch (error) {
-      setError((error as Error).message);
+    } catch (err) {
+      setError((err as Error).message);
     }
   };
+
   return (
     <dialog
       ref={dialog}
@@ -197,7 +315,7 @@ export default function TaskForm({
                   <small>
                     {mode === "instant"
                       ? "Find available seats now"
-                      : "Keep watching until seats open"}
+                      : "Keep watching every 1s until seats open"}
                   </small>
                 </span>
                 {form.mode === mode && <Icon name="check" size={16} />}
@@ -216,6 +334,11 @@ export default function TaskForm({
               onChange={(e) => update("movieName", e.target.value)}
             />
           </label>
+          <datalist id="live-movie-titles">
+            {movies?.map((movie) => (
+              <option key={movie.id} value={movie.title} />
+            ))}
+          </datalist>
           <div className="form-row">
             <label className="field">
               Show date
@@ -227,11 +350,6 @@ export default function TaskForm({
                 value={form.targetDate}
                 onChange={(e) => update("targetDate", e.target.value)}
               />
-              <datalist id="live-movie-titles">
-                {movies?.map((movie) => (
-                  <option key={movie.id} value={movie.title} />
-                ))}
-              </datalist>
             </label>
             <label className="field">
               Number of seats
@@ -241,10 +359,9 @@ export default function TaskForm({
                 min="1"
                 max="50"
                 required
-                value={form.requiredSeats}
-                onChange={(e) =>
-                  update("requiredSeats", Number(e.target.value))
-                }
+                value={seatCountText}
+                onChange={(e) => handleSeatCountChange(e.target.value)}
+                onBlur={handleSeatCountBlur}
               />
             </label>
           </div>
@@ -316,6 +433,19 @@ export default function TaskForm({
             onRowsChange={(rows) => update("allowedRows", rows)}
             onTimesChange={(times) => update("preferredTimes", times)}
           />
+          <ExactSeatPicker
+            targetSeats={form.targetSeats || []}
+            exactSeatsOnly={Boolean(form.exactSeatsOnly)}
+            refreshBrowserPage={Boolean(form.refreshBrowserPage)}
+            showRefreshToggle={form.source === "live"}
+            requiredSeats={form.requiredSeats}
+            onTargetSeatsChange={handleTargetSeatsChange}
+            onExactSeatsOnlyChange={handleExactSeatsOnlyChange}
+            onRefreshBrowserPageChange={(enabled) => {
+              setRefreshTouched(true);
+              update("refreshBrowserPage", enabled);
+            }}
+          />
           {form.mode === "monitor" && (
             <div className="form-row">
               <label className="field">
@@ -338,6 +468,7 @@ export default function TaskForm({
                 Start at <span className="muted">(optional · local time)</span>
                 <input
                   type="datetime-local"
+                  min={minSchedule}
                   value={schedule}
                   onChange={(e) => setSchedule(e.target.value)}
                 />
@@ -368,15 +499,15 @@ export default function TaskForm({
                     onChange={(e) =>
                       update(
                         "preferredCategory",
-                        e.target.value as TaskInput["preferredCategory"],
+                        e.target.value as ExtendedTaskInput["preferredCategory"],
                       )
                     }
                   >
-                    <option value="any">Any tier</option>
-                    <option value="regular">Regular</option>
-                    <option value="premium">Premium</option>
-                    <option value="vip">VIP</option>
-                    <option value="lounger">Lounger</option>
+                    {SEAT_CATEGORY_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
                   </select>
                 </label>
                 <label className="field">
@@ -386,7 +517,7 @@ export default function TaskForm({
                     onChange={(e) =>
                       update(
                         "rowPreference",
-                        e.target.value as TaskInput["rowPreference"],
+                        e.target.value as ExtendedTaskInput["rowPreference"],
                       )
                     }
                   >
@@ -401,7 +532,10 @@ export default function TaskForm({
                 <select
                   value={form.strategy}
                   onChange={(e) =>
-                    update("strategy", e.target.value as TaskInput["strategy"])
+                    update(
+                      "strategy",
+                      e.target.value as ExtendedTaskInput["strategy"],
+                    )
                   }
                 >
                   <option value="best">Best matching show</option>
@@ -470,7 +604,7 @@ export default function TaskForm({
             <Icon name="shield" size={14} />
             Payment stays in your hands.
           </span>
-          <button className="button primary" disabled={busy}>
+          <button className="button primary" disabled={busy || !connected}>
             {busy
               ? editing
                 ? "Saving…"

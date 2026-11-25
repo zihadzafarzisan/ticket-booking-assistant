@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import type { LiveInventory, LiveMovie } from "../../bot/src/live-types";
-import type { TaskInput } from "../../bot/src/contracts";
 import {
   movieDateAvailability,
   availabilityLabels,
@@ -9,6 +8,13 @@ import { Icon } from "./icons";
 import { today } from "./TaskForm";
 import { getTimeSlot, type TimeSlot } from "../../packages/core/src";
 import BookingPreferences from "./BookingPreferences";
+import ExactSeatPicker from "./ExactSeatPicker";
+import {
+  SEAT_CATEGORY_OPTIONS,
+  parseLocalDateTimeInput,
+  toLocalDateTimeInput,
+  type ExtendedTaskInput,
+} from "./types";
 
 export interface MovieBookingChoice {
   movie: LiveMovie;
@@ -41,20 +47,34 @@ export default function MovieBooking({
   inventory: LiveInventory;
   connected: boolean;
   onClose(): void;
-  onCreate(input: TaskInput): Promise<void>;
+  onCreate(input: ExtendedTaskInput): Promise<void>;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [date, setDate] = useState(choice.date || today());
   const [count, setCount] = useState(2);
+  const [countText, setCountText] = useState("2");
   const [locations, setLocations] = useState(choice.locationIds);
   const [together, setTogether] = useState(true);
   const [allowedRows, setAllowedRows] = useState<string[]>([]);
   const [preferredTimes, setPreferredTimes] = useState<TimeSlot[]>([]);
+  const [targetSeats, setTargetSeats] = useState<string[]>([]);
+  const [exactSeatsOnly, setExactSeatsOnly] = useState(false);
+  const [refreshBrowserPage, setRefreshBrowserPage] = useState(true);
+  const [intervalSeconds, setIntervalSeconds] = useState(1);
+  const [schedule, setSchedule] = useState("");
+  const [preferredCategory, setPreferredCategory] =
+    useState<ExtendedTaskInput["preferredCategory"]>("any");
+  const [rowPreference, setRowPreference] =
+    useState<ExtendedTaskInput["rowPreference"]>("center");
+  const [showSeatPrefs, setShowSeatPrefs] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const minSchedule = toLocalDateTimeInput(new Date());
+
   useEffect(() => {
     dialog.current?.showModal();
   }, []);
+
   const movie =
     inventory.movies.find((item) => item.id === choice.movie.id) ||
     choice.movie;
@@ -82,7 +102,12 @@ export default function MovieBooking({
     dateAvailability.shows.length > 0 && availability.shows.length === 0;
   const fresh = connected && inventory.status === "live";
   const canBook = availability.state === "available";
-  const valid = Number.isInteger(count) && count >= 1 && count <= 50;
+  const parsedCount = Number.parseInt(countText, 10);
+  const valid =
+    countText.trim() !== "" &&
+    Number.isInteger(parsedCount) &&
+    parsedCount >= 1 &&
+    parsedCount <= 50;
   const dates = [
     ...new Set(
       inventory.shows
@@ -114,36 +139,108 @@ export default function MovieBooking({
         ).shows.length,
     )
     .slice(0, 10);
-  const submit = async (event: React.FormEvent) => {
-    event.preventDefault();
+
+  const handleCountChange = (raw: string) => {
+    setCountText(raw);
+    if (/^\d+$/.test(raw)) {
+      const value = Number.parseInt(raw, 10);
+      if (value >= 1 && value <= 50) setCount(value);
+    }
+  };
+
+  const handleCountBlur = () => {
+    const value = Number.parseInt(countText, 10);
+    if (!Number.isInteger(value) || value < 1 || value > 50) {
+      setCountText(String(count));
+    } else {
+      setCount(value);
+      setCountText(String(value));
+    }
+  };
+
+  const handleTargetSeatsChange = (seats: string[]) => {
+    setTargetSeats(seats);
+    if (seats.length > 0) {
+      setCount(seats.length);
+      setCountText(String(seats.length));
+    }
+  };
+
+  const handleExactSeatsOnlyChange = (nextExact: boolean) => {
+    setExactSeatsOnly(nextExact);
+    if (nextExact && targetSeats.length > 0 && count > targetSeats.length) {
+      setCount(targetSeats.length);
+      setCountText(String(targetSeats.length));
+    }
+  };
+
+  const submitTask = async (forceMonitor: boolean) => {
     setError("");
-    if (!fresh || !valid) return;
+    if (!valid) {
+      setError("Choose between 1 and 50 seats.");
+      return;
+    }
+    if (!connected) {
+      setError("The dashboard is disconnected from the local bot service.");
+      return;
+    }
+    if (!forceMonitor && !fresh) return;
+    if (
+      exactSeatsOnly &&
+      targetSeats.length > 0 &&
+      targetSeats.length < parsedCount
+    ) {
+      setError(
+        `Exact seats only requires at least ${parsedCount} selected seat${parsedCount === 1 ? "" : "s"}.`,
+      );
+      return;
+    }
+    const mode: "instant" | "monitor" =
+      forceMonitor || !canBook ? "monitor" : "instant";
+    let scheduledAt: string | undefined;
+    if (mode === "monitor" && schedule.trim()) {
+      scheduledAt = parseLocalDateTimeInput(schedule);
+      if (!scheduledAt) {
+        setError("Choose a valid start date and time.");
+        return;
+      }
+    }
     setBusy(true);
     try {
       await onCreate({
         targetMovieId: movie.id,
         movieName: movie.title,
         targetDate: date,
-        requiredSeats: count,
+        requiredSeats: parsedCount,
         locationIds: locations,
-        mode: canBook ? "instant" : "monitor",
+        mode,
         source: "live",
         autoReserve: true,
         openPaymentGateway: true,
-        intervalSeconds: 1,
+        intervalSeconds,
+        scheduledAt,
         allowedRows,
         preferredTimes,
-        preferredCategory: "any",
-        rowPreference: "center",
+        preferredCategory,
+        rowPreference,
         strategy: "best",
         keepTogether: together,
+        targetSeats: targetSeats.length ? targetSeats : undefined,
+        exactSeatsOnly,
+        refreshBrowserPage: mode === "monitor" ? refreshBrowserPage : false,
       });
-    } catch (error) {
-      setError((error as Error).message);
+    } catch (err) {
+      setError((err as Error).message);
     } finally {
       setBusy(false);
     }
   };
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    await submitTask(false);
+  };
+
   return (
     <dialog
       ref={dialog}
@@ -159,7 +256,7 @@ export default function MovieBooking({
             <span className="eyebrow">YOUR MOVIE NIGHT</span>
             <h2>{movie.title}</h2>
             <p>
-              Choose your date, seats, rows, times and locations. Your bot
+              Choose your date, exact seats, rows, times and locations. Your bot
               handles the seat search.
             </p>
           </div>
@@ -233,8 +330,9 @@ export default function MovieBooking({
                 min={1}
                 max={50}
                 required
-                value={count}
-                onChange={(event) => setCount(Number(event.target.value))}
+                value={countText}
+                onChange={(event) => handleCountChange(event.target.value)}
+                onBlur={handleCountBlur}
               />
             </label>
           </div>
@@ -287,6 +385,16 @@ export default function MovieBooking({
             onRowsChange={setAllowedRows}
             onTimesChange={setPreferredTimes}
           />
+          <ExactSeatPicker
+            targetSeats={targetSeats}
+            exactSeatsOnly={exactSeatsOnly}
+            refreshBrowserPage={refreshBrowserPage}
+            showRefreshToggle
+            requiredSeats={count}
+            onTargetSeatsChange={handleTargetSeatsChange}
+            onExactSeatsOnlyChange={handleExactSeatsOnlyChange}
+            onRefreshBrowserPageChange={setRefreshBrowserPage}
+          />
           <section
             className={`booking-availability ${fresh && canBook ? "available" : ""}`}
             aria-live="polite"
@@ -313,7 +421,7 @@ export default function MovieBooking({
                       : availability.state === "unpublished"
                         ? "Cineplex has not published shows for these choices. This does not mean the date is sold out."
                         : "Choose another date or watch these choices for a sales opening."
-                : "The last snapshot cannot confirm tickets. Refresh Live Cineplex before starting a booking."}
+                : "The last snapshot cannot confirm instant tickets. Refresh Live Cineplex for instant booking, or arm a 1s drop monitor below."}
             </p>
             {!canBook && (
               <p className="booking-opening">
@@ -322,6 +430,19 @@ export default function MovieBooking({
                   : "Ticket-opening time: not announced by Cineplex for these choices."}
               </p>
             )}
+            {availability.openingAt && (
+              <button
+                type="button"
+                data-testid="schedule-opening-btn"
+                className="button secondary compact schedule-opening-btn"
+                onClick={() =>
+                  setSchedule(toLocalDateTimeInput(availability.openingAt!))
+                }
+              >
+                <Icon name="clock" size={13} />
+                Schedule for online sales open
+              </button>
+            )}
             {inventory.fetchedAt && (
               <small>
                 Last checked {timeLabel(inventory.fetchedAt)} · Dhaka time. Seat
@@ -329,6 +450,91 @@ export default function MovieBooking({
               </small>
             )}
           </section>
+          {(!canBook || !fresh) && (
+            <div className="form-row">
+              <label className="field">
+                Check every
+                <select
+                  aria-label="Monitor check interval"
+                  value={intervalSeconds}
+                  onChange={(event) =>
+                    setIntervalSeconds(Number(event.target.value))
+                  }
+                >
+                  <option value="1">1 second (Drop sniper)</option>
+                  <option value="2.5">2.5 seconds</option>
+                  <option value="5">5 seconds</option>
+                  <option value="10">10 seconds</option>
+                  <option value="30">30 seconds</option>
+                  <option value="60">1 minute</option>
+                </select>
+              </label>
+              <label className="field">
+                Start at <span className="muted">(optional · local time)</span>
+                <input
+                  aria-label="Monitor start time"
+                  type="datetime-local"
+                  min={minSchedule}
+                  value={schedule}
+                  onChange={(event) => setSchedule(event.target.value)}
+                />
+              </label>
+            </div>
+          )}
+          <button
+            type="button"
+            className="advanced-toggle"
+            aria-expanded={showSeatPrefs}
+            onClick={() => setShowSeatPrefs(!showSeatPrefs)}
+          >
+            <Icon name="settings" size={16} />
+            Seat tier & row preferences
+            <Icon
+              name="chevron"
+              size={15}
+              className={showSeatPrefs ? "rotate" : ""}
+            />
+          </button>
+          {showSeatPrefs && (
+            <div className="advanced-fields">
+              <div className="form-row">
+                <label className="field">
+                  Seat tier
+                  <select
+                    value={preferredCategory}
+                    onChange={(event) =>
+                      setPreferredCategory(
+                        event.target
+                          .value as ExtendedTaskInput["preferredCategory"],
+                      )
+                    }
+                  >
+                    {SEAT_CATEGORY_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="field">
+                  Row preference
+                  <select
+                    value={rowPreference}
+                    onChange={(event) =>
+                      setRowPreference(
+                        event.target
+                          .value as ExtendedTaskInput["rowPreference"],
+                      )
+                    }
+                  >
+                    <option value="center">Best centered seats</option>
+                    <option value="front">Front rows first</option>
+                    <option value="back">Back rows first</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+          )}
           {!!availability.shows.length && (
             <section
               className="booking-show-list"
@@ -348,7 +554,7 @@ export default function MovieBooking({
                       · {show.hall.name}
                     </small>
                   </span>
-                  <span className={`sale-status ${show.ticketStatus}`}>
+                  <span className={`sale-status sale-${show.ticketStatus}`}>
                     {show.ticketStatus === "open"
                       ? `${show.availableSeats} seats reported`
                       : show.ticketStatus.replaceAll("_", " ")}
@@ -413,7 +619,7 @@ export default function MovieBooking({
             <p>
               {canBook
                 ? "Your bot will use the connected browser, select the seats and continue toward the payment gateway. You complete login challenges, required checkout details and payment."
-                : "Watching checks this exact movie, date, seat count, rows, time slots and locations. When tickets become available, the bot uses your connected browser to select seats and open payment."}
+                : "Watching checks this exact movie, date, seat count, rows, time slots and locations every 1 second. When tickets become available, the bot uses your connected browser to select seats and open payment."}
             </p>
           </div>
           {error && (
@@ -426,17 +632,31 @@ export default function MovieBooking({
           <button type="button" className="button secondary" onClick={onClose}>
             Cancel
           </button>
-          <button
-            className="button primary"
-            disabled={busy || !fresh || !valid}
-          >
-            <Icon name={canBook ? "ticket" : "clock"} size={17} />
-            {busy
-              ? "Starting…"
-              : canBook
-                ? "Get seats & open payment"
-                : "Watch selected date"}
-          </button>
+          <div className="dialog-footer-actions">
+            {!fresh && (
+              <button
+                type="button"
+                data-testid="arm-stale-monitor-btn"
+                className="button secondary"
+                disabled={busy || !connected || !valid}
+                onClick={() => void submitTask(true)}
+              >
+                <Icon name="bolt" size={15} />
+                Arm 1s drop monitor
+              </button>
+            )}
+            <button
+              className="button primary"
+              disabled={busy || !fresh || !valid}
+            >
+              <Icon name={canBook ? "ticket" : "clock"} size={17} />
+              {busy
+                ? "Starting…"
+                : canBook
+                  ? "Get seats & open payment"
+                  : "Watch selected date"}
+            </button>
+          </div>
         </footer>
       </form>
     </dialog>

@@ -5,7 +5,7 @@ import type {
   LiveShow,
   TicketStatus,
 } from "../../bot/src/live-types";
-import type { TaskInput } from "../../bot/src/contracts";
+import type { ExtendedTaskInput } from "./types";
 import { getTimeSlot } from "../../packages/core/src";
 import { Icon } from "./icons";
 import type { MovieBookingChoice } from "./MovieBooking";
@@ -38,7 +38,7 @@ export default function LiveCineplex({
   inventory?: LiveInventory;
   connected: boolean;
   onRefresh: () => Promise<unknown>;
-  onCreate: (seed: Partial<TaskInput>) => void;
+  onCreate: (seed: Partial<ExtendedTaskInput>) => void;
   onChooseMovie: (choice: MovieBookingChoice) => void;
 }) {
   const [tab, setTab] = useState<"movies" | "shows" | "halls">("movies");
@@ -113,26 +113,31 @@ export default function LiveCineplex({
     const chosenBranch = inventory?.branches.find(
       (b) => b.id === (matching?.venueId || branch),
     );
+    const isOpen = matching?.ticketStatus === "open";
     onCreate({
       movieName: movie.title,
       targetMovieId: movie.id,
       targetDate: matching?.date || date || today,
       source: "live",
-      mode: matching?.ticketStatus === "open" ? "instant" : "monitor",
+      mode: isOpen ? "instant" : "monitor",
+      intervalSeconds: 1,
+      refreshBrowserPage: !isOpen,
       locationIds: chosenBranch ? [chosenBranch.locationId] : [],
       preferredTimes: exact && matching ? [getTimeSlot(matching.time)] : [],
       ...(exact && matching ? { targetShowId: matching.id } : {}),
       autoReserve: true,
     });
   };
-  const chooseMovie = (movie: LiveMovie) =>
+  const chooseMovie = (movie: LiveMovie) => {
+    const chosenBranch = branch
+      ? inventory?.branches.find((item) => item.id === branch)
+      : undefined;
     onChooseMovie({
       movie,
       date: date || undefined,
-      locationIds: branch
-        ? [inventory!.branches.find((item) => item.id === branch)!.locationId]
-        : [],
+      locationIds: chosenBranch ? [chosenBranch.locationId] : [],
     });
+  };
   const refresh = async () => {
     setRefreshing(true);
     try {
@@ -200,8 +205,8 @@ export default function LiveCineplex({
             <p>
               {inventory.error ||
                 "The last successful update is too old to treat as current."}{" "}
-              Live mission shortcuts stay disabled until a fresh update
-              succeeds.
+              Instant booking shortcuts wait for a fresh update, while 1s drop
+              monitors can still be armed.
             </p>
           </div>
         </div>
@@ -575,14 +580,34 @@ export default function LiveCineplex({
                       <i />
                       {labels[show.ticketStatus]}
                     </span>
-                    <button
-                      className="button secondary compact"
-                      disabled={!fresh || show.ticketStatus !== "open"}
-                      onClick={() => seed(show.movie as LiveMovie, show, true)}
-                    >
-                      Find seats
-                      <Icon name="arrow" size={13} />
-                    </button>
+                    {show.ticketStatus === "open" ? (
+                      <button
+                        className="button secondary compact"
+                        disabled={!fresh}
+                        onClick={() => seed(show.movie as LiveMovie, show, true)}
+                      >
+                        Find seats
+                        <Icon name="arrow" size={13} />
+                      </button>
+                    ) : show.ticketStatus === "not_open" ||
+                      show.ticketStatus === "sold_out" ||
+                      show.ticketStatus === "unknown" ? (
+                      <button
+                        className="button primary compact"
+                        data-testid="live-target-drop"
+                        disabled={!connected}
+                        onClick={() => seed(show.movie as LiveMovie, show, true)}
+                      >
+                        Target drop (1s)
+                        <Icon name="bolt" size={13} />
+                      </button>
+                    ) : (
+                      <button className="button secondary compact" disabled>
+                        {show.ticketStatus === "counter_only"
+                          ? "Counter only"
+                          : "Sales closed"}
+                      </button>
+                    )}
                   </div>
                 </article>
               ))}
