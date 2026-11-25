@@ -2,7 +2,9 @@ import { test, expect } from "@playwright/test";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { BrowserDriver } from "../../bot/src/browser";
+import { BrowserConnection } from "../../bot/src/browser-connection";
 import { validateTask } from "../../bot/src/contracts";
+import { CredentialStore } from "../../bot/src/credentials";
 import { DiscoveryService } from "../../bot/src/discovery";
 import { LiveStarCineplexAdapter } from "../../bot/src/live-adapter";
 import { LiveInventoryService } from "../../bot/src/live-inventory";
@@ -28,6 +30,7 @@ async function startIsolatedStack(
   options: {
     inventoryOptions?: InventoryFixtureOptions;
     pageOptions?: CineplexPageFixtureOptions;
+    includeSettings?: boolean;
   } = {},
 ) {
   await mkdir(".bot-test-data", { recursive: true });
@@ -47,6 +50,13 @@ async function startIsolatedStack(
   const inventory = new LiveInventoryService(invFixture.fetcher);
   await inventory.refresh();
 
+  const browserConnection = options.includeSettings
+    ? new BrowserConnection(dataDir)
+    : undefined;
+  const credentials = options.includeSettings
+    ? new CredentialStore(resolve(dataDir, "credentials.json"), undefined)
+    : undefined;
+
   const driver = new BrowserDriver(resolve(dataDir, "unused-profile"), true);
   Object.assign(driver, { context: cinemaContext });
 
@@ -60,6 +70,8 @@ async function startIsolatedStack(
   const { server, closeEvents } = createBotServer(runner, {
     staticDirectory: resolve("dashboard/dist"),
     inventory,
+    browserConnection,
+    credentials,
   });
   await new Promise<void>((done, reject) => {
     server.once("error", reject);
@@ -758,4 +770,724 @@ test("awaiting_user and error alerts trigger toast and re-trigger after retry", 
   await expect(page.getByTestId("handoff-toast")).toContainText(
     "Show selection failed cleanly.",
   );
+});
+
+test("[B1] candidate pool targetSeats picks exact requiredSeats without over-booking or infinite retry, and undersized targetSeats falls back cleanly to contiguous pair", async ({
+  browser,
+}) => {
+  const show: Showtime = {
+    id: "show-later",
+    movie: { id: "movie-upcoming", title: "Upcoming Film" },
+    cinema: { id: "star-cineplex", name: "Sony Square", location: "Mirpur" },
+    hall: { id: "hall-two", name: "VIP Hall", screenType: "2d", capacity: 30 },
+    date: futureDate(),
+    time: "20:00",
+    screenType: "2d",
+    price: 500,
+    currency: "BDT",
+    availableSeats: 20,
+    totalSeats: 30,
+    bookingUrl:
+      "https://kichole.com/shows/show-later/seats?tenant=star-cineplex",
+  };
+
+  // 1a. Candidate pool ["E5", "E6", "E7"] for requiredSeats: 2 when E7 is occupied -> picks E5, E6 cleanly (no retry loop)
+  const poolOccupiedContext = await browser.newContext();
+  try {
+    const fixture = createCineplexPageFixture({
+      showId: "show-later",
+      initiallyOpen: true,
+      rows: ["D", "E", "F"],
+      seatsPerRow: 10,
+      occupiedSeats: ["E7"],
+      rerenderOnClick: true,
+    });
+    await fixture.attach(poolOccupiedContext);
+    const page = await poolOccupiedContext.newPage();
+    await page.goto(fixture.bookingUrl);
+
+    const driver = new BrowserDriver(".bot-test-data/unused-b1-pool", true);
+    Object.assign(driver, {
+      context: poolOccupiedContext,
+      pages: new Map([["b1-pool-occ:show-later", page]]),
+    });
+
+    const input = validateTask({
+      movieName: "Upcoming Film",
+      targetDate: show.date,
+      requiredSeats: 2,
+      allowedRows: ["E"],
+      targetSeats: ["E5", "E6", "E7"],
+      exactSeatsOnly: true,
+      autoReserve: true,
+      mode: "monitor",
+    });
+
+    const result = await driver.reserve(
+      "b1-pool-occ",
+      show,
+      input,
+      new AbortController().signal,
+    );
+
+    expect(result.status).toBe("awaiting_payment");
+    expect([...result.selectedSeats].sort()).toEqual(["E5", "E6"]);
+    expect(fixture.state.checkoutVisits).toBe(1);
+    expect([...fixture.state.lastCheckoutSeats].sort()).toEqual(["E5", "E6"]);
+  } finally {
+    await poolOccupiedContext.close();
+  }
+
+  // 1b. Candidate pool ["E5", "E6", "E7"] for requiredSeats: 2 when ALL 3 are free -> picks strictly 2 seats (never 3)
+  const poolFreeContext = await browser.newContext();
+  try {
+    const fixture = createCineplexPageFixture({
+      showId: "show-later",
+      initiallyOpen: true,
+      rows: ["D", "E", "F"],
+      seatsPerRow: 10,
+      rerenderOnClick: true,
+    });
+    await fixture.attach(poolFreeContext);
+    const page = await poolFreeContext.newPage();
+    await page.goto(fixture.bookingUrl);
+
+    const driver = new BrowserDriver(".bot-test-data/unused-b1-free", true);
+    Object.assign(driver, {
+      context: poolFreeContext,
+      pages: new Map([["b1-pool-free:show-later", page]]),
+    });
+
+    const input = validateTask({
+      movieName: "Upcoming Film",
+      targetDate: show.date,
+      requiredSeats: 2,
+      allowedRows: ["E"],
+      targetSeats: ["E5", "E6", "E7"],
+      exactSeatsOnly: true,
+      autoReserve: true,
+      mode: "monitor",
+    });
+
+    const result = await driver.reserve(
+      "b1-pool-free",
+      show,
+      input,
+      new AbortController().signal,
+    );
+
+    expect(result.status).toBe("awaiting_payment");
+    expect(result.selectedSeats).toHaveLength(2);
+    expect(
+      result.selectedSeats.every((seat) => ["E5", "E6", "E7"].includes(seat)),
+    ).toBe(true);
+    expect(fixture.state.checkoutVisits).toBe(1);
+    expect(fixture.state.lastCheckoutSeats).toHaveLength(2);
+  } finally {
+    await poolFreeContext.close();
+  }
+
+  // 2. Undersized targetSeats: ["E5"] with requiredSeats: 2, exactSeatsOnly: false -> falls back to 2 contiguous seats (never 1)
+  const partialContext = await browser.newContext();
+  try {
+    const fixture = createCineplexPageFixture({
+      showId: "show-later",
+      initiallyOpen: true,
+      rows: ["D", "E", "F"],
+      seatsPerRow: 10,
+      rerenderOnClick: true,
+    });
+    await fixture.attach(partialContext);
+    const page = await partialContext.newPage();
+    await page.goto(fixture.bookingUrl);
+
+    const driver = new BrowserDriver(".bot-test-data/unused-b1-partial", true);
+    Object.assign(driver, {
+      context: partialContext,
+      pages: new Map([["b1-partial:show-later", page]]),
+    });
+
+    const input = validateTask({
+      movieName: "Upcoming Film",
+      targetDate: show.date,
+      requiredSeats: 2,
+      allowedRows: ["E"],
+      targetSeats: ["E5"],
+      exactSeatsOnly: false,
+      autoReserve: true,
+      mode: "monitor",
+    });
+
+    const result = await driver.reserve(
+      "b1-partial",
+      show,
+      input,
+      new AbortController().signal,
+    );
+
+    expect(result.status).toBe("awaiting_payment");
+    expect(result.selectedSeats).toHaveLength(2);
+    expect(result.selectedSeats).toContain("E5");
+    const nums = result.selectedSeats
+      .map((label) => {
+        expect(label.startsWith("E")).toBe(true);
+        return Number(label.slice(1));
+      })
+      .sort((a, b) => a - b);
+    expect(nums[1] - nums[0]).toBe(1);
+    expect(fixture.state.checkoutVisits).toBe(1);
+    expect([...fixture.state.lastCheckoutSeats].sort()).toEqual(
+      [...result.selectedSeats].sort(),
+    );
+  } finally {
+    await partialContext.close();
+  }
+});
+
+test("[B2] open show with initially occupied exact seats uses refreshPage cleanly until free without premature dropDetectedAt", async ({
+  page,
+  browser,
+}) => {
+  test.setTimeout(35_000);
+  const stack = await startIsolatedStack(browser, {
+    pageOptions: {
+      showId: "show-open",
+      initiallyOpen: true,
+      rows: ["D", "E", "F"],
+      seatsPerRow: 10,
+      occupiedSeatsUntilRefresh: {
+        seats: ["E5", "E6"],
+        freeAfterRefresh: 4,
+      },
+      rerenderOnClick: true,
+    },
+  });
+
+  let prematureDropDetectedAt = false;
+  let prematureCheckout = false;
+  let sawDomGateRefreshing = false;
+  const unsubscribe = stack.runner.subscribe(() => {
+    const task = stack.runner.snapshot().tasks[0];
+    if (!task) return;
+    if (stack.pageFixture.state.loads < 4) {
+      if (task.dropDetectedAt) prematureDropDetectedAt = true;
+      if (stack.pageFixture.state.checkoutVisits > 0) prematureCheckout = true;
+      if (
+        (task.pageRefreshCount ?? 0) >= 1 &&
+        task.pageRefreshState === "refreshing"
+      ) {
+        sawDomGateRefreshing = true;
+      }
+    }
+  });
+
+  try {
+    const created = await page.request.post(`${stack.baseUrl}/api/tasks`, {
+      headers: { "X-Ticket-Bot": "dashboard" },
+      data: {
+        movieName: "Running Film",
+        targetMovieId: "movie-running",
+        targetShowId: "show-open",
+        targetDate: stack.date,
+        requiredSeats: 2,
+        targetSeats: ["E5", "E6"],
+        exactSeatsOnly: true,
+        refreshBrowserPage: true,
+        mode: "monitor",
+        source: "live",
+        intervalSeconds: 1,
+        locationIds: ["bashundhara"],
+        allowedRows: ["E"],
+        preferredTimes: [],
+        autoReserve: true,
+      },
+    });
+    expect(created.status()).toBe(201);
+    const task = await created.json();
+
+    await expect
+      .poll(
+        () =>
+          stack.runner.snapshot().tasks.find((t) => t.id === task.id)?.status,
+        {
+          timeout: 20_000,
+          message:
+            "Task should wait cleanly via refreshPage until E5, E6 free up on refresh 4 then acquire immediately",
+        },
+      )
+      .toBe("awaiting_payment");
+
+    const finalTask = stack.runner
+      .snapshot()
+      .tasks.find((t) => t.id === task.id);
+    expect(prematureDropDetectedAt).toBe(false);
+    expect(prematureCheckout).toBe(false);
+    expect(sawDomGateRefreshing).toBe(true);
+    expect(finalTask?.pageRefreshCount ?? 0).toBeGreaterThanOrEqual(4);
+    expect(finalTask?.dropDetectedAt).toBeTruthy();
+    expect(stack.pageFixture.state.checkoutVisits).toBe(1);
+    expect([...stack.pageFixture.state.lastCheckoutSeats].sort()).toEqual([
+      "E5",
+      "E6",
+    ]);
+  } finally {
+    unsubscribe();
+    await stack.cleanup();
+  }
+});
+
+test("[B3] stopping during warming (pageRefreshCount === 0) and aborting mid-newPage leak zero watch tabs", async ({
+  page,
+  browser,
+}) => {
+  test.setTimeout(30_000);
+  const stack = await startIsolatedStack(browser, {
+    pageOptions: {
+      initiallyOpen: false,
+    },
+  });
+
+  let markWarmingHit!: () => void;
+  const warmingHit = new Promise<void>((res) => {
+    markWarmingHit = res;
+  });
+  let releaseFirstLoad!: () => void;
+  const firstLoadGate = new Promise<void>((res) => {
+    releaseFirstLoad = res;
+  });
+  let interceptedFirst = false;
+
+  // LIFO route runs before pageFixture.attach to pause the initial page.goto right during "warming"
+  await stack.cinemaContext.route(
+    "https://kichole.com/shows/show-later/seats*",
+    async (route) => {
+      if (!interceptedFirst) {
+        interceptedFirst = true;
+        markWarmingHit();
+        await Promise.race([
+          firstLoadGate,
+          new Promise<void>((res) => setTimeout(res, 8000)),
+        ]);
+        await route.abort().catch(() => {});
+        return;
+      }
+      await route.fallback();
+    },
+  );
+
+  try {
+    const created = await page.request.post(`${stack.baseUrl}/api/tasks`, {
+      headers: { "X-Ticket-Bot": "dashboard" },
+      data: {
+        movieName: "Upcoming Film",
+        targetMovieId: "movie-upcoming",
+        targetShowId: "show-later",
+        targetDate: stack.date,
+        requiredSeats: 2,
+        targetSeats: ["E5", "E6"],
+        exactSeatsOnly: true,
+        refreshBrowserPage: true,
+        mode: "monitor",
+        source: "live",
+        intervalSeconds: 1,
+        locationIds: ["sony-square"],
+        allowedRows: ["E"],
+        preferredTimes: [],
+        autoReserve: true,
+      },
+    });
+    expect(created.status()).toBe(201);
+    const task = await created.json();
+
+    await warmingHit;
+    const mid = stack.runner.snapshot().tasks.find((t) => t.id === task.id);
+    expect(mid?.pageRefreshState).toBe("warming");
+    expect(mid?.pageRefreshCount).toBe(0);
+    expect(stack.cinemaContext.pages().length).toBe(1);
+
+    const stopped = await page.request.post(
+      `${stack.baseUrl}/api/tasks/${task.id}/stop`,
+      {
+        headers: { "X-Ticket-Bot": "dashboard" },
+        data: {},
+      },
+    );
+    expect(stopped.status()).toBe(200);
+    releaseFirstLoad();
+
+    await expect
+      .poll(() => stack.cinemaContext.pages().length, {
+        timeout: 5_000,
+        message: "Warming watch tab must be closed immediately on stop()",
+      })
+      .toBe(0);
+
+    const after = stack.runner.snapshot().tasks.find((t) => t.id === task.id);
+    expect(after?.status).toBe("stopped");
+    expect(after?.pageRefreshCount).toBe(0);
+    expect(stack.pageFixture.state.checkoutVisits).toBe(0);
+  } finally {
+    releaseFirstLoad();
+    await stack.cleanup();
+  }
+
+  // Also verify direct abort while context.newPage() is in flight closes the created tab cleanly
+  const abortContext = await browser.newContext();
+  try {
+    const controller = new AbortController();
+    const origNewPage = abortContext.newPage.bind(abortContext);
+    const wrappedContext = Object.create(abortContext) as typeof abortContext;
+    wrappedContext.newPage = async () => {
+      const p = await origNewPage();
+      controller.abort(new Error("Aborted mid-newPage"));
+      return p;
+    };
+
+    const driver = new BrowserDriver(".bot-test-data/unused-b3-abort", true);
+    Object.assign(driver, { context: wrappedContext });
+
+    const input = validateTask({
+      movieName: "Upcoming Film",
+      targetDate: futureDate(),
+      requiredSeats: 2,
+      targetSeats: ["E5", "E6"],
+      exactSeatsOnly: true,
+      mode: "monitor",
+    });
+
+    await expect(
+      driver.refreshPage(
+        "b3-abort",
+        "https://kichole.com/shows/show-later/seats?tenant=star-cineplex",
+        input,
+        controller.signal,
+      ),
+    ).rejects.toThrow();
+
+    expect(abortContext.pages().length).toBe(0);
+  } finally {
+    await abortContext.close();
+  }
+});
+
+test("[B4] POST /api/settings/browser rejects changes during active monitoring with refreshBrowserPage and close() + reconnect preserves onDisconnect", async ({
+  page,
+  browser,
+}) => {
+  test.setTimeout(35_000);
+  const stack = await startIsolatedStack(browser, {
+    includeSettings: true,
+    pageOptions: {
+      initiallyOpen: false,
+    },
+  });
+
+  try {
+    const created = await page.request.post(`${stack.baseUrl}/api/tasks`, {
+      headers: { "X-Ticket-Bot": "dashboard" },
+      data: {
+        movieName: "Upcoming Film",
+        targetMovieId: "movie-upcoming",
+        targetShowId: "show-later",
+        targetDate: stack.date,
+        requiredSeats: 2,
+        targetSeats: ["E5", "E6"],
+        exactSeatsOnly: true,
+        refreshBrowserPage: true,
+        mode: "monitor",
+        source: "live",
+        intervalSeconds: 3,
+        locationIds: ["sony-square"],
+        allowedRows: ["E"],
+        preferredTimes: [],
+        autoReserve: true,
+      },
+    });
+    expect(created.status()).toBe(201);
+    const task = await created.json();
+
+    // Wait until task has completed a tick and is resting in "monitoring"
+    await expect
+      .poll(
+        () =>
+          stack.runner.snapshot().tasks.find((t) => t.id === task.id)?.status,
+        { timeout: 10_000 },
+      )
+      .toBe("monitoring");
+
+    const blocked = await page.request.post(
+      `${stack.baseUrl}/api/settings/browser`,
+      {
+        headers: { "X-Ticket-Bot": "dashboard" },
+        data: { endpoint: "http://127.0.0.1:9223" },
+      },
+    );
+    expect(blocked.status()).toBe(409);
+    const blockedBody = await blocked.json();
+    expect(blockedBody.error).toContain("Stop active seat searches");
+
+    // Stopping the task allows browser settings update cleanly
+    const stopped = await page.request.post(
+      `${stack.baseUrl}/api/tasks/${task.id}/stop`,
+      {
+        headers: { "X-Ticket-Bot": "dashboard" },
+        data: {},
+      },
+    );
+    expect(stopped.status()).toBe(200);
+
+    const allowed = await page.request.post(
+      `${stack.baseUrl}/api/settings/browser`,
+      {
+        headers: { "X-Ticket-Bot": "dashboard" },
+        data: { endpoint: "http://127.0.0.1:9223" },
+      },
+    );
+    expect(allowed.status()).toBe(200);
+    expect(await allowed.json()).toEqual({ endpoint: "http://127.0.0.1:9223" });
+  } finally {
+    await stack.cleanup();
+  }
+
+  // Verify BrowserDriver.close() + reconnect preserves external disconnect propagation to onDisconnect
+  const ctx1 = await browser.newContext();
+  const ctx2 = await browser.newContext();
+  try {
+    const page1 = await ctx1.newPage();
+    await ctx1.route("https://kichole.com/**", (route) =>
+      route.fulfill({ status: 200, contentType: "text/html", body: "<h1>1</h1>" }),
+    );
+    await page1.goto("https://kichole.com/?tenant=star-cineplex");
+
+    const page2 = await ctx2.newPage();
+    await ctx2.route("https://kichole.com/**", (route) =>
+      route.fulfill({ status: 200, contentType: "text/html", body: "<h1>2</h1>" }),
+    );
+    await page2.goto("https://kichole.com/?tenant=star-cineplex");
+
+    const listeners = new Set<() => void>();
+    let connected = false;
+    let connectCalls = 0;
+    const mockConnection = {
+      onDisconnect(listener: () => void) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      isConnected() {
+        return connected;
+      },
+      async connect() {
+        connectCalls++;
+        connected = true;
+        return connectCalls === 1 ? ctx1 : ctx2;
+      },
+      async openRegular() {
+        return this.connect();
+      },
+      async disconnect() {
+        connected = false;
+      },
+    };
+
+    const driver = new BrowserDriver(".bot-test-data/unused-b4-conn", true, {
+      connection: mockConnection as unknown as BrowserConnection,
+    });
+
+    let disconnectEvents = 0;
+    driver.onDisconnect(() => {
+      disconnectEvents++;
+    });
+
+    // Initial connect
+    await driver.openSession(true);
+    expect(driver.status().connected).toBe(true);
+
+    // Settings-style close() followed by reconnect
+    await driver.close();
+    expect(driver.status().connected).toBe(false);
+
+    await driver.openSession(true);
+    expect(driver.status().connected).toBe(true);
+
+    // External browser disconnect MUST still fire onDisconnect!
+    connected = false;
+    for (const listener of [...listeners]) listener();
+
+    expect(disconnectEvents).toBe(1);
+    expect(driver.status().connected).toBe(false);
+  } finally {
+    await ctx1.close().catch(() => {});
+    await ctx2.close().catch(() => {});
+  }
+});
+
+test("[W1] SVG seat elements with hyphenated seat-booked and seat-selected classes are read, avoided, clicked, and verified cleanly", async ({
+  browser,
+}) => {
+  const show: Showtime = {
+    id: "show-later",
+    movie: { id: "movie-upcoming", title: "Upcoming Film" },
+    cinema: { id: "star-cineplex", name: "Sony Square", location: "Mirpur" },
+    hall: { id: "hall-two", name: "VIP Hall", screenType: "2d", capacity: 30 },
+    date: futureDate(),
+    time: "20:00",
+    screenType: "2d",
+    price: 500,
+    currency: "BDT",
+    availableSeats: 20,
+    totalSeats: 30,
+    bookingUrl:
+      "https://kichole.com/shows/show-later/seats?tenant=star-cineplex",
+  };
+
+  const svgContext = await browser.newContext();
+  try {
+    const fixture = createCineplexPageFixture({
+      showId: "show-later",
+      initiallyOpen: true,
+      rows: ["D", "E", "F"],
+      seatsPerRow: 10,
+      occupiedSeats: ["E4", "E7"],
+      useSvgSeats: true,
+      rerenderOnClick: true,
+    });
+    await fixture.attach(svgContext);
+    const page = await svgContext.newPage();
+    await page.goto(fixture.bookingUrl);
+
+    // Confirm fixture genuinely rendered SVG <g> elements with hyphenated classes
+    await expect(page.locator('svg g.seat-booked[data-seat="E4"]')).toBeVisible();
+    await expect(page.locator('svg g.seat-available[data-seat="E5"]')).toBeVisible();
+
+    const driver = new BrowserDriver(".bot-test-data/unused-w1-svg", true);
+    Object.assign(driver, {
+      context: svgContext,
+      pages: new Map([["w1-svg:show-later", page]]),
+    });
+
+    const input = validateTask({
+      movieName: "Upcoming Film",
+      targetDate: show.date,
+      requiredSeats: 2,
+      allowedRows: ["E"],
+      targetSeats: ["E4", "E5", "E6", "E7"],
+      exactSeatsOnly: true,
+      autoReserve: true,
+      mode: "monitor",
+    });
+
+    const result = await driver.reserve(
+      "w1-svg",
+      show,
+      input,
+      new AbortController().signal,
+    );
+
+    expect(result.status).toBe("awaiting_payment");
+    expect([...result.selectedSeats].sort()).toEqual(["E5", "E6"]);
+    expect(fixture.state.checkoutVisits).toBe(1);
+    expect([...fixture.state.lastCheckoutSeats].sort()).toEqual(["E5", "E6"]);
+  } finally {
+    await svgContext.close();
+  }
+});
+
+test("[W4/W7] UI disables exactSeatsOnly with 0 seats, wires preferredHall & preferredShowtime, and renders 16-column seat picker cleanly on desktop & mobile", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "New mission", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+
+  // W4: Exact seats only is disabled when 0 target seats are selected
+  const exactToggle = dialog.getByTestId("exact-seats-only-toggle");
+  await expect(exactToggle).toBeDisabled();
+  await expect(exactToggle).not.toBeChecked();
+  await expect(
+    dialog.getByText(
+      "Select at least 1 exact seat above to enable strict exact-only mode.",
+    ),
+  ).toBeVisible();
+
+  // W7: Column 16 renders and is interactive
+  const cellE15 = dialog.getByTestId("seat-picker-cell-E15");
+  const cellE16 = dialog.getByTestId("seat-picker-cell-E16");
+  await expect(cellE16).toBeVisible();
+  await cellE15.click();
+  await cellE16.click();
+  await expect(dialog.getByTestId("target-seats-input")).toHaveValue("E15, E16");
+
+  // Once seats are selected, exact-seats-only becomes enabled; clearing disables & unchecks it
+  await expect(exactToggle).toBeEnabled();
+  await exactToggle.check();
+  await expect(exactToggle).toBeChecked();
+  await dialog.getByRole("button", { name: "Clear seats", exact: true }).click();
+  await expect(exactToggle).toBeDisabled();
+  await expect(exactToggle).not.toBeChecked();
+
+  // Re-select E15 & E16, enable strict mode, and fill preferredHall & preferredShowtime
+  await cellE15.click();
+  await cellE16.click();
+  await exactToggle.check();
+  await dialog.getByLabel("Movie name").fill("Upcoming Film");
+  await dialog.getByRole("button", { name: /Monitor a drop/ }).click();
+  await dialog.getByTestId("preferred-hall-input").fill("VIP Hall");
+  await dialog.getByTestId("preferred-showtime-input").fill("20:00");
+
+  await page.screenshot({
+    path: screenshotPath("task-form-w4-w7-16col.png"),
+    fullPage: true,
+  });
+
+  let submitted: Record<string, unknown> | undefined;
+  await page.route("**/api/tasks", async (route) => {
+    submitted = route.request().postDataJSON();
+    await route.fulfill({
+      status: 400,
+      json: { error: "Intercepted W4/W7 payload verification." },
+    });
+  });
+
+  await dialog
+    .getByRole("button", { name: "Start monitoring", exact: true })
+    .click();
+  await expect(dialog.getByRole("alert")).toContainText(
+    "Intercepted W4/W7 payload verification.",
+  );
+  expect(submitted).toMatchObject({
+    movieName: "Upcoming Film",
+    requiredSeats: 2,
+    targetSeats: ["E15", "E16"],
+    exactSeatsOnly: true,
+    preferredHall: "VIP Hall",
+    preferredShowtime: "20:00",
+    mode: "monitor",
+    refreshBrowserPage: true,
+  });
+
+  // Also verify backend contract rejects exactSeatsOnly: true with empty targetSeats
+  const badRes = await page.request.post("/api/tasks", {
+    headers: { "X-Ticket-Bot": "dashboard" },
+    data: {
+      movieName: "Upcoming Film",
+      targetDate: futureDate(),
+      requiredSeats: 2,
+      exactSeatsOnly: true,
+      mode: "monitor",
+      source: "live",
+    },
+  });
+  expect(badRes.status()).toBe(400);
+  expect((await badRes.json()).error).toContain(
+    "Exact seats only requires at least one target seat",
+  );
+
+  // Mobile 390px overflow check with 16-column seat picker open
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(dialog.getByTestId("seat-picker-cell-E16")).toBeAttached();
+  const noOverflow = await page.evaluate(
+    () => document.documentElement.scrollWidth <= window.innerWidth,
+  );
+  expect(noOverflow).toBe(true);
 });
