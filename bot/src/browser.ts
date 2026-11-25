@@ -1,9 +1,25 @@
 import { chromium, type BrowserContext, type Page } from "playwright";
 import { mkdir } from "node:fs/promises";
 import { eligibleBlocks } from "./discovery";
-import { selectOptimalSeats } from "../../packages/core/src";
-import type { Seat, SeatCategory, Showtime } from "../../packages/core/src";
-import type { BrowserStatus, Handoff, TaskInput } from "./contracts";
+import {
+  normalizeSeatLabel,
+  selectExactSeats,
+  selectOptimalSeats,
+} from "../../packages/core/src";
+import type {
+  Seat,
+  SeatCategory,
+  SeatMap,
+  Showtime,
+} from "../../packages/core/src";
+import type {
+  BrowserStatus,
+  Handoff,
+  HandoffReason,
+  PageRefreshResult,
+  PageRefreshState,
+  TaskInput,
+} from "./contracts";
 import type { BrowserConnection } from "./browser-connection";
 import type { CredentialStore } from "./credentials";
 import {
@@ -13,38 +29,9 @@ import {
 } from "./cinema-login";
 import { isPaymentGatewayUrl, openPaymentGateway } from "./payment-handoff";
 
-export type HandoffReason =
-  | "exact_seats_unavailable"
-  | "seat_stolen_mid_click"
-  | "login_required"
-  | "captcha_required"
-  | "checkout_blocked"
-  | "seat_map_not_ready";
-
-export type BrowserHandoff = Handoff & {
-  retryable?: boolean;
-  reason?: HandoffReason;
-};
-
-export interface PageRefreshResult {
-  refreshedAt: string;
-  latencyMs: number;
-  url: string;
-  pageReady: boolean;
-  dropDetected: boolean;
-  availableSeatCount: number;
-  availableTargetSeats: string[];
-  warning?: string;
-  requiresUserAttention?: boolean;
-}
-
-type BrowserTaskInput = TaskInput & {
-  targetSeats?: string[];
-  exactSeatsOnly?: boolean;
-  refreshBrowserPage?: boolean;
-  preferredHall?: string;
-  preferredShowtime?: string;
-};
+export { normalizeSeatLabel };
+export type { HandoffReason, PageRefreshResult, PageRefreshState };
+export type BrowserHandoff = Handoff;
 
 export interface BrowserPort {
   status(): BrowserStatus;
@@ -101,19 +88,7 @@ export function allowedBookingUrl(raw: string): string {
   return url.href;
 }
 
-export function normalizeSeatLabel(raw: string): string | undefined {
-  const trimmed = raw.trim().toUpperCase();
-  const direct = trimmed.match(/^([A-Z]{1,3})[\s-]*0*([1-9]\d{0,2})$/);
-  if (direct) return `${direct[1]}${Number(direct[2])}`;
-  const row = trimmed.match(/\bROW:?\s*([A-Z]{1,3})\b/);
-  const num = trimmed.match(
-    /\bSEAT:?\s*(?:[A-Z]{1,3}[\s-]*)?0*([1-9]\d{0,2})\b/,
-  );
-  if (row && num) return `${row[1]}${Number(num[1])}`;
-  return undefined;
-}
-
-function normalizeTargetSeats(input: BrowserTaskInput): string[] {
+function normalizeTargetSeats(input: TaskInput): string[] {
   const raw = input.targetSeats;
   if (!Array.isArray(raw) || !raw.length) return [];
   const seen = new Set<string>();
@@ -204,6 +179,12 @@ export class BrowserDriver implements BrowserPort {
       credentials?: CredentialStore;
     } = {},
   ) {
+    this.attachConnectionDisconnect();
+  }
+
+  private attachConnectionDisconnect() {
+    this.connectionUnsubscribe?.();
+    this.connectionUnsubscribe = undefined;
     if (this.options.connection?.onDisconnect) {
       this.connectionUnsubscribe = this.options.connection.onDisconnect(() => {
         this.handleContextDisconnected(this.context);
@@ -294,6 +275,7 @@ export class BrowserDriver implements BrowserPort {
             viewport: null,
           });
       this.context = context;
+      this.attachConnectionDisconnect();
       context.on?.("close", () => {
         this.handleContextDisconnected(context);
       });
@@ -388,10 +370,9 @@ export class BrowserDriver implements BrowserPort {
     signal: AbortSignal,
   ): Promise<PageRefreshResult> {
     const started = Date.now();
-    const taskInput = input as BrowserTaskInput;
     const url = allowedBookingUrl(targetUrl);
-    const targetSeats = normalizeTargetSeats(taskInput);
-    const exactOnly = taskInput.exactSeatsOnly === true;
+    const targetSeats = normalizeTargetSeats(input);
+    const exactOnly = input.exactSeatsOnly === true;
     const showId = extractShowIdFromUrl(url);
     const showKey = showId ? `${taskId}:${showId}` : undefined;
 
@@ -422,7 +403,12 @@ export class BrowserDriver implements BrowserPort {
     }
 
     if (!page || page.isClosed()) {
-      page = await context.newPage();
+      const created = await context.newPage();
+      if (signal.aborted) {
+        await created.close().catch(() => {});
+        signal.throwIfAborted();
+      }
+      page = created;
       this.preparePage(page);
       this.watchPages.set(taskId, page);
       if (showKey && !this.pages.has(showKey)) this.pages.set(showKey, page);
@@ -518,10 +504,28 @@ export class BrowserDriver implements BrowserPort {
       const availableTargetSeats = targetSeats.filter((label) =>
         availableSet.has(label),
       );
+      const exactSelection =
+        targetSeats.length > 0
+          ? selectExactLiveSeats(
+              liveSeats,
+              targetSeats,
+              input,
+              {
+                cinemaId: "star-cineplex",
+                movieId: input.targetMovieId || "live-movie",
+                showtimeId: showId || "live-show",
+                hallName: input.preferredHall || "Star Cineplex Hall",
+                screenType: "standard",
+              },
+              false,
+            )
+          : [];
       const dropDetected = targetSeats.length
         ? exactOnly
-          ? availableTargetSeats.length === targetSeats.length
-          : availableTargetSeats.length === targetSeats.length ||
+          ? availableTargetSeats.length >= input.requiredSeats &&
+            exactSelection.length === input.requiredSeats
+          : (availableTargetSeats.length >= input.requiredSeats &&
+              exactSelection.length === input.requiredSeats) ||
             available.length >= input.requiredSeats
         : available.length >= input.requiredSeats;
 
@@ -573,9 +577,8 @@ export class BrowserDriver implements BrowserPort {
     signal: AbortSignal,
   ): Promise<BrowserHandoff> {
     signal.throwIfAborted();
-    const taskInput = input as BrowserTaskInput;
-    const targetSeats = normalizeTargetSeats(taskInput);
-    const exactOnly = taskInput.exactSeatsOnly === true;
+    const targetSeats = normalizeTargetSeats(input);
+    const exactOnly = input.exactSeatsOnly === true;
     const url = allowedBookingUrl(show.bookingUrl);
     const context = await this.ensureContext();
     signal.throwIfAborted();
@@ -591,7 +594,6 @@ export class BrowserDriver implements BrowserPort {
       previous?.input === JSON.stringify(input) &&
       isCheckoutOrPaymentUrl(page.url())
     ) {
-      await page.bringToFront();
       return this.gatewayHandoff(key, page, previous.labels, signal);
     }
 
@@ -607,7 +609,12 @@ export class BrowserDriver implements BrowserPort {
         page = watch;
         this.pages.set(key, page);
       } else {
-        page = await context.newPage();
+        const created = await context.newPage();
+        if (signal.aborted) {
+          await created.close().catch(() => {});
+          signal.throwIfAborted();
+        }
+        page = created;
         this.pages.set(key, page);
       }
     }
@@ -615,15 +622,18 @@ export class BrowserDriver implements BrowserPort {
     this.preparePage(page);
 
     signal.throwIfAborted();
-    await page.bringToFront();
     if (!page.url().includes(`/shows/${show.id}/seats`)) {
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
     } else {
-      const seatsVisible = await page
+      let seatsVisible = await page
         .locator(SEAT_DOM_SELECTOR)
         .first()
         .isVisible()
         .catch(() => false);
+      if (!seatsVisible) {
+        seatsVisible =
+          (await page.evaluate(readLiveSeats).catch(() => [])).length > 0;
+      }
       const loginVisible = await page
         .locator(
           'input[type="password"], input[autocomplete="one-time-code"], input[name*="otp" i], iframe[src*="recaptcha"], iframe[src*="hcaptcha"], iframe[src*="challenges.cloudflare.com"], [data-sitekey]',
@@ -635,12 +645,33 @@ export class BrowserDriver implements BrowserPort {
       if (!needsReload && isWatchPage && seatsVisible) {
         // Reload once if the warmed tab still holds a pre-reopen DOM without available target/required seats.
         const cachedSeats = await page.evaluate(readLiveSeats).catch(() => []);
-        const avail = cachedSeats.filter((s) => s.status === "available");
+        const avail = cachedSeats.filter(
+          (s) => s.status === "available" || s.selected,
+        );
         const availSet = new Set(avail.map((s) => s.label));
+        const availTargets = targetSeats.filter((l) => availSet.has(l));
+        const cachedExact =
+          targetSeats.length > 0
+            ? selectExactLiveSeats(
+                cachedSeats,
+                targetSeats,
+                input,
+                {
+                  cinemaId: show.cinema.id,
+                  movieId: show.movie.id,
+                  showtimeId: show.id,
+                  hallName: show.hall.name,
+                  screenType: show.screenType,
+                },
+                true,
+              )
+            : [];
         const readyInDom = targetSeats.length
           ? exactOnly
-            ? targetSeats.every((l) => availSet.has(l))
-            : targetSeats.every((l) => availSet.has(l)) ||
+            ? availTargets.length >= input.requiredSeats &&
+              cachedExact.length === input.requiredSeats
+            : (availTargets.length >= input.requiredSeats &&
+                cachedExact.length === input.requiredSeats) ||
               avail.length >= input.requiredSeats
           : avail.length >= input.requiredSeats;
         if (!readyInDom) needsReload = true;
@@ -671,17 +702,23 @@ export class BrowserDriver implements BrowserPort {
     }
     signal.throwIfAborted();
 
-    const userHandoff = (
+    const activePage = page;
+    const userHandoff = async (
       message: string,
       selectedSeats: string[] = [],
       extra: { retryable?: boolean; reason?: HandoffReason } = {},
-    ): BrowserHandoff => ({
-      status: "awaiting_user",
-      message,
-      url: page!.url(),
-      selectedSeats,
-      ...extra,
-    });
+    ): Promise<BrowserHandoff> => {
+      if (!extra.retryable && !activePage.isClosed()) {
+        await this.raiseWindow(activePage);
+      }
+      return {
+        status: "awaiting_user",
+        message,
+        url: activePage.isClosed() ? url : activePage.url(),
+        selectedSeats,
+        ...extra,
+      };
+    };
 
     const body = await page
       .locator("body")
@@ -715,25 +752,32 @@ export class BrowserDriver implements BrowserPort {
       });
     }
 
-    try {
-      await page.waitForSelector(SEAT_DOM_SELECTOR, {
-        state: "visible",
-        timeout: input.mode === "monitor" ? 6_000 : 12_000,
-      });
-    } catch {
+    let liveSeats = await page.evaluate(readLiveSeats).catch(() => []);
+    if (!liveSeats.length) {
+      try {
+        await page.waitForSelector(SEAT_DOM_SELECTOR, {
+          state: "visible",
+          timeout: input.mode === "monitor" ? 6_000 : 12_000,
+        });
+      } catch {
+        signal.throwIfAborted();
+        liveSeats = await page.evaluate(readLiveSeats).catch(() => []);
+        if (!liveSeats.length) {
+          return userHandoff(
+            "The seat map is not ready. Complete any login step in the browser, then retry selection.",
+            [],
+            {
+              retryable: input.mode === "monitor",
+              reason: "seat_map_not_ready",
+            },
+          );
+        }
+      }
       signal.throwIfAborted();
-      return userHandoff(
-        "The seat map is not ready. Complete any login step in the browser, then retry selection.",
-        [],
-        {
-          retryable: input.mode === "monitor",
-          reason: "seat_map_not_ready",
-        },
-      );
+      if (!liveSeats.length) {
+        liveSeats = await page.evaluate(readLiveSeats);
+      }
     }
-    signal.throwIfAborted();
-
-    let liveSeats = await page.evaluate(readLiveSeats);
     const rowsReady = () => {
       if (!liveSeats.length) return false;
       if (targetSeats.length) {
@@ -757,36 +801,47 @@ export class BrowserDriver implements BrowserPort {
     let usingExactTarget = false;
     let selected: Seat[] = [];
     if (targetSeats.length) {
-      const byLabel = new Map(liveSeats.map((s) => [s.label, s]));
-      const exactMatches = targetSeats
-        .map((label) => byLabel.get(label))
-        .filter(
-          (s): s is LiveSeat =>
-            !!s && (s.status === "available" || s.selected),
-        );
-      if (exactMatches.length === targetSeats.length) {
+      const exactSelection = selectExactLiveSeats(
+        liveSeats,
+        targetSeats,
+        input,
+        {
+          cinemaId: show.cinema.id,
+          movieId: show.movie.id,
+          showtimeId: show.id,
+          hallName: show.hall.name,
+          screenType: show.screenType,
+        },
+        true,
+      );
+      if (exactSelection.length === input.requiredSeats) {
         usingExactTarget = true;
-        selected = exactMatches.map((s) => ({ ...s, id: s.token }));
+        selected = exactSelection;
       } else if (exactOnly) {
+        const byLabel = new Map(liveSeats.map((s) => [s.label, s]));
         const missing = targetSeats.filter((label) => {
           const seat = byLabel.get(label);
           return !seat || (seat.status !== "available" && !seat.selected);
         });
         return userHandoff(
-          `Requested exact seats (${missing.join(", ")}) are not available on the live seat map.`,
+          `Requested exact seats (${missing.length ? missing.join(", ") : targetSeats.join(", ")}) do not have ${input.requiredSeats} available seat(s) on the live seat map.`,
           [],
           { retryable: true, reason: "exact_seats_unavailable" },
         );
       } else {
-        selected = pickFallbackSeats(liveSeats, show, input);
+        selected = pickFallbackSeats(
+          liveSeats,
+          show,
+          input,
+          new Set(),
+          targetSeats,
+        );
       }
     } else {
       selected = pickFallbackSeats(liveSeats, show, input);
     }
 
-    const expectedSeatCount = usingExactTarget
-      ? targetSeats.length
-      : input.requiredSeats;
+    const expectedSeatCount = input.requiredSeats;
 
     if (selected.length !== expectedSeatCount) {
       return userHandoff(
@@ -820,13 +875,24 @@ export class BrowserDriver implements BrowserPort {
 
     // If an exact target seat was stolen mid-click (and partial seats were atomically rolled back),
     // cleanly fall back to best contiguous block when exactSeatsOnly is false.
-    if (!attemptResult.ok && usingExactTarget && !exactOnly) {
+    if (
+      !attemptResult.ok &&
+      attemptResult.rollbackVerified !== false &&
+      usingExactTarget &&
+      !exactOnly
+    ) {
       signal.throwIfAborted();
       const freshSeats = await page.evaluate(readLiveSeats);
       const exclude = new Set<string>(
         attemptResult.failedLabel ? [attemptResult.failedLabel] : [],
       );
-      const fallback = pickFallbackSeats(freshSeats, show, input, exclude);
+      const fallback = pickFallbackSeats(
+        freshSeats,
+        show,
+        input,
+        exclude,
+        targetSeats,
+      );
       const fallbackDesired = new Set(fallback.map((seat) => seat.label));
       if (
         fallback.length === input.requiredSeats &&
@@ -848,16 +914,22 @@ export class BrowserDriver implements BrowserPort {
 
     signal.throwIfAborted();
     if (!attemptResult.ok) {
+      this.selections.delete(key);
       const reason: HandoffReason = attemptResult.stolen
         ? "seat_stolen_mid_click"
         : "exact_seats_unavailable";
+      const rollbackCleared = attemptResult.rollbackVerified !== false;
+      const rollbackNote = rollbackCleared
+        ? "Partial selection was cleanly cleared."
+        : "Partial selection could not be fully verified as cleared — check the browser tab.";
       const msg = attemptResult.stolen
-        ? `Seat ${attemptResult.failedLabel || "selection"} was taken during selection. Partial selection was cleanly rolled back.`
+        ? `Seat ${attemptResult.failedLabel || "selection"} was taken during selection. ${rollbackNote}`
         : attemptResult.changed
-          ? "The final seat selection changed. Partial selection was cleanly rolled back."
-          : `Could not verify ${attemptResult.failedLabel || "seat selection"}. Please check the browser before continuing.`;
+          ? `The final seat selection changed. ${rollbackNote}`
+          : `Could not verify ${attemptResult.failedLabel || "seat selection"}. ${rollbackCleared ? "Please check the browser before continuing." : rollbackNote}`;
       return userHandoff(msg, [], {
-        retryable: targetSeats.length > 0 || attemptResult.stolen,
+        retryable:
+          rollbackCleared && (targetSeats.length > 0 || attemptResult.stolen),
         reason,
       });
     }
@@ -906,11 +978,16 @@ export class BrowserDriver implements BrowserPort {
       if (!isCheckoutOrPaymentUrl(page.url())) {
         const conflict = await detectSeatConflictAlert(page);
         if (conflict) {
-          await rollbackSeats(page, labels, signal);
+          const cleared = await rollbackSeats(page, labels, signal);
+          this.selections.delete(key);
           return userHandoff(
-            `Checkout reported a seat conflict (${conflict}). Partial selection was cleanly cleared.`,
+            `Checkout reported a seat conflict (${conflict}). ${
+              cleared
+                ? "Partial selection was cleanly cleared."
+                : "Partial selection could not be fully verified as cleared — check the browser tab."
+            }`,
             [],
-            { retryable: true, reason: "checkout_blocked" },
+            { retryable: cleared, reason: "checkout_blocked" },
           );
         }
       }
@@ -989,11 +1066,16 @@ export class BrowserDriver implements BrowserPort {
 
     const postConflict = await detectSeatConflictAlert(page);
     if (postConflict) {
-      await rollbackSeats(page, labels, signal);
+      const cleared = await rollbackSeats(page, labels, signal);
+      this.selections.delete(key);
       return userHandoff(
-        `Checkout could not proceed (${postConflict}). Partial selection was cleanly cleared.`,
+        `Checkout could not proceed (${postConflict}). ${
+          cleared
+            ? "Partial selection was cleanly cleared."
+            : "Partial selection could not be fully verified as cleared — check the browser tab."
+        }`,
         [],
-        { retryable: true, reason: "checkout_blocked" },
+        { retryable: cleared, reason: "checkout_blocked" },
       );
     }
 
@@ -1081,12 +1163,22 @@ export class BrowserDriver implements BrowserPort {
   }
 }
 
-function pickFallbackSeats(
+function buildLiveSeatMap(
   liveSeats: LiveSeat[],
-  show: Showtime,
-  input: TaskInput,
-  excludeLabels: Set<string> = new Set(),
-): Seat[] {
+  meta: {
+    cinemaId: string;
+    movieId: string;
+    showtimeId: string;
+    hallName: string;
+    screenType: string;
+  },
+  options: {
+    excludeLabels?: Set<string>;
+    allowedRows?: string[];
+    includeSelectedAsSelectable?: boolean;
+  } = {},
+): SeatMap {
+  const excludeLabels = options.excludeLabels ?? new Set<string>();
   const rows = new Map<string, Seat[]>();
   // Separate physical arms before using the shared block detector.
   const grouped = new Map<string, LiveSeat[]>();
@@ -1112,10 +1204,16 @@ function pickFallbackSeats(
       )
         arm++;
       const group = `${row}:${arm}`;
+      const status: Seat["status"] = excludeLabels.has(seat.label)
+        ? "occupied"
+        : options.includeSelectedAsSelectable && seat.selected
+          ? "selected"
+          : seat.status;
       const normalized: Seat = {
         ...seat,
         id: seat.token,
-        status: excludeLabels.has(seat.label) ? "occupied" : seat.status,
+        section: group,
+        status,
       };
       const list = rows.get(group) || [];
       list.push(normalized);
@@ -1124,49 +1222,151 @@ function pickFallbackSeats(
     }
   }
   // Row keys are physical arms; filter allowed rows on seat metadata first.
-  for (const [key, seats] of rows)
-    if (input.allowedRows.length && !input.allowedRows.includes(seats[0].row))
-      rows.delete(key);
-  const map = {
-    cinemaId: show.cinema.id,
-    movieId: show.movie.id,
-    showtimeId: show.id,
+  if (options.allowedRows?.length) {
+    for (const [key, seats] of rows)
+      if (!options.allowedRows.includes(seats[0].row)) rows.delete(key);
+  }
+  return {
+    cinemaId: meta.cinemaId,
+    movieId: meta.movieId,
+    showtimeId: meta.showtimeId,
     rows,
     blocks: [],
-    hallName: show.hall.name,
-    screenType: show.screenType,
+    hallName: meta.hallName,
+    screenType: meta.screenType,
     totalSeats: liveSeats.length,
     availableSeats: liveSeats.filter(
       (s) => s.status === "available" && !excludeLabels.has(s.label),
     ).length,
     fetchedAt: new Date(),
   };
+}
+
+function selectExactLiveSeats(
+  liveSeats: LiveSeat[],
+  targetSeats: string[],
+  input: TaskInput,
+  meta: {
+    cinemaId: string;
+    movieId: string;
+    showtimeId: string;
+    hallName: string;
+    screenType: string;
+  },
+  includeSelectedAsSelectable: boolean,
+): Seat[] {
+  if (!targetSeats.length || targetSeats.length < input.requiredSeats) {
+    return [];
+  }
+  const seatMap = buildLiveSeatMap(liveSeats, meta, {
+    includeSelectedAsSelectable,
+  });
+  const picked = selectExactSeats(seatMap, targetSeats, input.requiredSeats);
+  if (picked.length !== input.requiredSeats) return [];
+  return picked;
+}
+
+function pickFallbackSeats(
+  liveSeats: LiveSeat[],
+  show: Showtime,
+  input: TaskInput,
+  excludeLabels: Set<string> = new Set(),
+  preferredTargetLabels: string[] = [],
+): Seat[] {
+  const map = buildLiveSeatMap(
+    liveSeats,
+    {
+      cinemaId: show.cinema.id,
+      movieId: show.movie.id,
+      showtimeId: show.id,
+      hallName: show.hall.name,
+      screenType: show.screenType,
+    },
+    {
+      excludeLabels,
+      allowedRows: input.allowedRows,
+    },
+  );
   const domHasCategories = liveSeats.some((seat) => !!seat.category);
   const blocks = eligibleBlocks(map, {
     ...input,
     allowedRows: [],
+    targetSeats: undefined,
+    exactSeatsOnly: false,
     preferredCategory: domHasCategories ? input.preferredCategory : "any",
   });
-  return blocks.length
-    ? selectOptimalSeats(blocks[0], input.requiredSeats)
-    : [];
+  if (!blocks.length) return [];
+
+  if (preferredTargetLabels.length) {
+    const targetSet = new Set(preferredTargetLabels);
+    const targetRows = new Set(
+      liveSeats.filter((s) => targetSet.has(s.label)).map((s) => s.row),
+    );
+    // Prefer a contiguous block containing an available requested seat (e.g. E5 -> E5, E6).
+    const blockWithTarget = blocks.find((b) =>
+      b.seats.some((s) => s.status === "available" && targetSet.has(s.label)),
+    );
+    if (blockWithTarget) {
+      const avail = blockWithTarget.seats.filter(
+        (s) => s.status === "available",
+      );
+      if (avail.length >= input.requiredSeats) {
+        const idx = avail.findIndex((s) => targetSet.has(s.label));
+        if (idx >= 0) {
+          let start = Math.max(
+            0,
+            idx - Math.floor((input.requiredSeats - 1) / 2),
+          );
+          if (start + input.requiredSeats > avail.length) {
+            start = Math.max(0, avail.length - input.requiredSeats);
+          }
+          return avail.slice(start, start + input.requiredSeats);
+        }
+      }
+    }
+    const blockInTargetRow = blocks.find((b) => targetRows.has(b.row));
+    if (blockInTargetRow) {
+      return selectOptimalSeats(blockInTargetRow, input.requiredSeats);
+    }
+  }
+
+  return selectOptimalSeats(blocks[0], input.requiredSeats);
 }
 
 async function resolveSeatToken(
   page: Page,
   label: string,
-  preferredToken?: string,
 ): Promise<LiveSeat | undefined> {
-  if (preferredToken) {
-    const existing = page.locator(`[data-ticket-bot-seat="${preferredToken}"]`);
-    if ((await existing.count().catch(() => 0)) === 1) {
-      // Confirm React didn't reuse the token on a different seat.
-      const seats = await page.evaluate(readLiveSeats);
-      return seats.find((s) => s.label === label);
-    }
-  }
   const seats = await page.evaluate(readLiveSeats);
   return seats.find((s) => s.label === label);
+}
+
+async function locateSeatElement(page: Page, token: string) {
+  const selector = `[data-ticket-bot-seat="${token}"]`;
+  const main = page.locator(selector);
+  if ((await main.count().catch(() => 0)) > 0) return main.first();
+  for (const frame of page.frames()) {
+    if (frame === page.mainFrame()) continue;
+    const inFrame = frame.locator(selector);
+    if ((await inFrame.count().catch(() => 0)) > 0) return inFrame.first();
+  }
+  return main;
+}
+
+async function dispatchElementClick(
+  locator: ReturnType<Page["locator"]>,
+): Promise<void> {
+  await locator
+    .evaluate((el) => {
+      if (typeof (el as HTMLElement).click === "function") {
+        (el as HTMLElement).click();
+      } else {
+        el.dispatchEvent(
+          new MouseEvent("click", { bubbles: true, cancelable: true }),
+        );
+      }
+    })
+    .catch(() => {});
 }
 
 async function waitForSeatSelectionState(
@@ -1197,21 +1397,25 @@ async function rollbackSeats(
   page: Page,
   labelsToDeselect: string[],
   signal: AbortSignal,
-): Promise<void> {
-  if (!labelsToDeselect.length || page.isClosed()) return;
+): Promise<boolean> {
+  if (!labelsToDeselect.length) return true;
+  if (page.isClosed()) return false;
+  let allCleared = true;
   for (const label of [...labelsToDeselect].reverse()) {
-    if (signal.aborted || page.isClosed()) return;
+    if (signal.aborted || page.isClosed()) return false;
+    let cleared = false;
     for (let attempt = 0; attempt < 2; attempt++) {
       const seat = await resolveSeatToken(page, label);
-      if (!seat || !seat.selected) break;
-      const element = page.locator(`[data-ticket-bot-seat="${seat.token}"]`);
+      if (!seat || !seat.selected) {
+        cleared = true;
+        break;
+      }
+      const element = await locateSeatElement(page, seat.token);
       try {
         await element.click({ timeout: 2500 });
       } catch {
         await dismissFloatingBanners(page).catch(() => {});
-        await element
-          .evaluate((el) => (el as HTMLElement).click())
-          .catch(() => {});
+        await dispatchElementClick(element);
       }
       const res = await waitForSeatSelectionState(
         page,
@@ -1220,9 +1424,18 @@ async function rollbackSeats(
         800,
         signal,
       ).catch(() => ({ matched: false }));
-      if (res.matched) break;
+      if (res.matched) {
+        cleared = true;
+        break;
+      }
     }
+    if (!cleared) allCleared = false;
   }
+  if (!allCleared || signal.aborted || page.isClosed()) return false;
+  const remaining = await page.evaluate(readLiveSeats).catch(() => undefined);
+  if (!remaining) return false;
+  const toClear = new Set(labelsToDeselect);
+  return !remaining.some((s) => toClear.has(s.label) && s.selected);
 }
 
 async function clickAndVerifySeats(
@@ -1232,25 +1445,41 @@ async function clickAndVerifySeats(
   signal: AbortSignal,
 ): Promise<
   | { ok: true; labels: string[] }
-  | { ok: false; failedLabel?: string; stolen: boolean; changed?: boolean }
+  | {
+      ok: false;
+      failedLabel?: string;
+      stolen: boolean;
+      changed?: boolean;
+      rollbackVerified?: boolean;
+    }
 > {
   const labels: string[] = [];
   const clickedByBot: string[] = [];
 
   for (const seat of selected) {
     signal.throwIfAborted();
-    let live = await resolveSeatToken(page, seat.label, seat.id);
+    let live = await resolveSeatToken(page, seat.label);
     if (!live) {
-      await rollbackSeats(page, clickedByBot, signal);
-      return { ok: false, failedLabel: seat.label, stolen: true };
+      const rollbackVerified = await rollbackSeats(page, clickedByBot, signal);
+      return {
+        ok: false,
+        failedLabel: seat.label,
+        stolen: true,
+        rollbackVerified,
+      };
     }
     if (live.selected) {
       labels.push(seat.label);
       continue;
     }
     if (live.status === "occupied") {
-      await rollbackSeats(page, clickedByBot, signal);
-      return { ok: false, failedLabel: seat.label, stolen: true };
+      const rollbackVerified = await rollbackSeats(page, clickedByBot, signal);
+      return {
+        ok: false,
+        failedLabel: seat.label,
+        stolen: true,
+        rollbackVerified,
+      };
     }
 
     let accepted = false;
@@ -1268,16 +1497,14 @@ async function clickAndVerifySeats(
           break;
         }
       }
-      const element = page.locator(`[data-ticket-bot-seat="${live.token}"]`);
+      const element = await locateSeatElement(page, live.token);
       try {
         await element.click({ timeout: 5000 });
       } catch (clickError) {
         signal.throwIfAborted();
         if (/intercepts pointer events/i.test((clickError as Error).message)) {
           await dismissFloatingBanners(page);
-          await element
-            .evaluate((el) => (el as HTMLElement).click())
-            .catch(() => {});
+          await dispatchElementClick(element);
         } else {
           // Element may have been disabled or re-rendered mid-click; re-check live DOM.
           live = await resolveSeatToken(page, seat.label);
@@ -1311,8 +1538,13 @@ async function clickAndVerifySeats(
 
     signal.throwIfAborted();
     if (!accepted) {
-      await rollbackSeats(page, clickedByBot, signal);
-      return { ok: false, failedLabel: seat.label, stolen };
+      const rollbackVerified = await rollbackSeats(page, clickedByBot, signal);
+      return {
+        ok: false,
+        failedLabel: seat.label,
+        stolen,
+        rollbackVerified,
+      };
     }
     clickedByBot.push(seat.label);
     labels.push(seat.label);
@@ -1326,8 +1558,8 @@ async function clickAndVerifySeats(
     verified.length !== selected.length ||
     verified.some((seat) => !desiredLabels.has(seat.label))
   ) {
-    await rollbackSeats(page, clickedByBot, signal);
-    return { ok: false, stolen: true, changed: true };
+    const rollbackVerified = await rollbackSeats(page, clickedByBot, signal);
+    return { ok: false, stolen: true, changed: true, rollbackVerified };
   }
 
   return { ok: true, labels };
@@ -1390,31 +1622,10 @@ export async function dismissFloatingBanners(page: Page) {
   }
 }
 
-export function isSeatSelected(el: Element): boolean {
-  const aria = el.getAttribute("aria-label") || "";
-  return (
-    el.getAttribute("aria-selected") === "true" ||
-    el.getAttribute("aria-checked") === "true" ||
-    el.getAttribute("aria-pressed") === "true" ||
-    el.getAttribute("data-seat-state") === "selected" ||
-    el.getAttribute("data-seat-status") === "selected" ||
-    el.getAttribute("data-state") === "selected" ||
-    el.getAttribute("data-selected") === "true" ||
-    el.getAttribute("data-seat-selected") === "true" ||
-    el.classList.contains("selected") ||
-    el.classList.contains("is-selected") ||
-    (!/\b(unselected|not selected|deselected)\b/i.test(aria) &&
-      /\bselected\b/i.test(aria))
-  );
-}
-
 // Self-contained because Playwright serializes this function into the cinema page.
 export function readLiveSeats() {
-  const nodes = Array.from(
-    document.querySelectorAll<HTMLElement>(
-      '[data-seat-id], [data-seat-label], [data-seat], [data-seat-name], [data-seat-number], [role="gridcell"], button[aria-label*="seat" i], button[title*="seat" i]',
-    ),
-  );
+  const selector =
+    '[data-seat-id], [data-seat-label], [data-seat], [data-seat-name], [data-seat-number], [role="gridcell"], button[aria-label*="seat" i], button[title*="seat" i]';
   const seen = new Set<string>();
   const unavailableStates = new Set([
     "occupied",
@@ -1426,6 +1637,18 @@ export function readLiveSeats() {
     "locked",
     "taken",
   ]);
+  const unavailableClassWords = new Set([
+    "occupied",
+    "booked",
+    "sold",
+    "unavailable",
+    "blocked",
+    "reserved",
+    "locked",
+    "taken",
+    "disabled",
+  ]);
+  const selectedClassWords = new Set(["selected", "active"]);
   const knownCategories = new Set([
     "regular",
     "standard",
@@ -1436,21 +1659,42 @@ export function readLiveSeats() {
     "wheelchair",
     "semi-recliner",
   ]);
+  const hasClassKeyword = (
+    classValue: string,
+    keywords: Set<string>,
+  ): boolean => {
+    const tokens = classValue.trim().split(/\s+/);
+    for (const token of tokens) {
+      if (!token) continue;
+      const parts = token
+        .replace(/([a-z])([A-Z])/g, "$1-$2")
+        .toLowerCase()
+        .split(/[-_]+/)
+        .filter(Boolean);
+      for (let i = 0; i < parts.length; i++) {
+        if (!keywords.has(parts[i])) continue;
+        const prev = i > 0 ? parts[i - 1] : "";
+        if (prev === "not" || prev === "non" || prev === "un") continue;
+        return true;
+      }
+    }
+    return false;
+  };
   const extractPair = (raw: string): [string, string] | undefined => {
     const value = raw.trim().toUpperCase();
     if (!value) return undefined;
-    const direct = value.match(/^([A-Z]{1,3})[\s-]?0*([1-9]\d{0,2})$/);
+    const direct = value.match(/^([A-Z]{1,3})[\s_-]*0*([1-9]\d{0,2})$/);
     if (direct) return [direct[1], direct[2]];
     const row = value.match(/\bROW:?\s*([A-Z]{1,3})\b/);
     const num = value.match(
-      /\bSEAT:?\s*(?:[A-Z]{1,3}[\s-]*)?0*([1-9]\d{0,2})\b/,
+      /\bSEAT:?\s*(?:[A-Z]{1,3}[\s_-]*)?0*([1-9]\d{0,2})\b/,
     );
     if (row && num) return [row[1], num[1]];
     const seatInline = value.match(
-      /\bSEAT:?\s*([A-Z]{1,3})[\s-]?0*([1-9]\d{0,2})\b/,
+      /\bSEAT:?\s*([A-Z]{1,3})[\s_-]*0*([1-9]\d{0,2})\b/,
     );
     if (seatInline) return [seatInline[1], seatInline[2]];
-    const leading = value.match(/^([A-Z]{1,3})[\s-]?0*([1-9]\d{0,2})\b/);
+    const leading = value.match(/^([A-Z]{1,3})[\s_-]*0*([1-9]\d{0,2})\b/);
     if (leading) return [leading[1], leading[2]];
     return undefined;
   };
@@ -1467,108 +1711,146 @@ export function readLiveSeats() {
     width: number;
     selected: boolean;
   }> = [];
-  for (const el of nodes) {
-    const box = el.getBoundingClientRect();
-    if (!box.width || !box.height) continue;
-    const dataLabel = el.getAttribute("data-seat-label") || "";
-    const dataSeat =
-      el.getAttribute("data-seat") || el.getAttribute("data-seat-name") || "";
-    const dataRow = (el.getAttribute("data-row") || "").trim().toUpperCase();
-    const dataNum = (
-      el.getAttribute("data-seat-number") ||
-      el.getAttribute("data-col") ||
-      el.getAttribute("data-number") ||
-      ""
-    ).trim();
-    const opaqueId = (el.getAttribute("data-seat-id") || "").trim();
-    const aria = el.getAttribute("aria-label") || "";
-    const title = el.getAttribute("title") || "";
-    const text = (el.textContent || "").trim();
 
-    const pair =
-      extractPair(dataLabel) ||
-      extractPair(dataSeat) ||
-      (dataRow && /^[A-Z]{1,3}$/.test(dataRow) && /^0*[1-9]\d{0,2}$/.test(dataNum)
-        ? ([dataRow, dataNum] as [string, string])
-        : undefined) ||
-      extractPair(aria) ||
-      extractPair(title) ||
-      extractPair(text) ||
-      extractPair(opaqueId);
-    if (!pair) continue;
+  const parseNodes = (nodes: Element[]) => {
+    for (const el of nodes) {
+      const box = el.getBoundingClientRect();
+      if (!box.width || !box.height) continue;
+      const dataLabel = el.getAttribute("data-seat-label") || "";
+      const dataSeat =
+        el.getAttribute("data-seat") || el.getAttribute("data-seat-name") || "";
+      const dataRow = (el.getAttribute("data-row") || "").trim().toUpperCase();
+      const dataNum = (
+        el.getAttribute("data-seat-number") ||
+        el.getAttribute("data-col") ||
+        el.getAttribute("data-number") ||
+        ""
+      ).trim();
+      const opaqueId = (el.getAttribute("data-seat-id") || "").trim();
+      const aria = el.getAttribute("aria-label") || "";
+      const title = el.getAttribute("title") || "";
+      const text = (el.textContent || "").trim();
 
-    const row = pair[0];
-    const number = Number(pair[1]);
-    const label = `${row}${number}`;
-    if (seen.has(label)) continue;
-    seen.add(label);
+      const pair =
+        extractPair(dataLabel) ||
+        extractPair(dataSeat) ||
+        (dataRow &&
+        /^[A-Z]{1,3}$/.test(dataRow) &&
+        /^0*[1-9]\d{0,2}$/.test(dataNum)
+          ? ([dataRow, dataNum] as [string, string])
+          : undefined) ||
+        extractPair(aria) ||
+        extractPair(title) ||
+        extractPair(text) ||
+        extractPair(opaqueId);
+      if (!pair) continue;
 
-    const token = `seat-${result.length}`;
-    el.setAttribute("data-ticket-bot-seat", token);
+      const row = pair[0];
+      const number = Number(pair[1]);
+      const label = `${row}${number}`;
+      if (seen.has(label)) continue;
+      seen.add(label);
 
-    const statusAttrs = [
-      el.getAttribute("data-status"),
-      el.getAttribute("data-seat-status"),
-      el.getAttribute("data-seat-state"),
-      el.getAttribute("data-state"),
-    ]
-      .filter((v): v is string => !!v)
-      .map((v) => v.trim().toLowerCase());
+      const token = `seat-${result.length}`;
+      el.setAttribute("data-ticket-bot-seat", token);
 
-    const unavailable =
-      el.hasAttribute("disabled") ||
-      el.getAttribute("aria-disabled") === "true" ||
-      el.getAttribute("data-seat-disabled") === "true" ||
-      el.getAttribute("data-disabled") === "true" ||
-      el.getAttribute("data-available") === "false" ||
-      el.getAttribute("data-seat-readonly") === "true" ||
-      /(^|\s)(occupied|booked|sold|unavailable|blocked|reserved|locked|taken|disabled)(\s|$)/i.test(
-        el.className?.toString() || "",
-      ) ||
-      /\b(occupied|booked|sold|unavailable|blocked|reserved|locked|taken)\b/i.test(
-        `${aria} ${title}`,
-      ) ||
-      statusAttrs.some((s) => unavailableStates.has(s));
+      const statusAttrs = [
+        el.getAttribute("data-status"),
+        el.getAttribute("data-seat-status"),
+        el.getAttribute("data-seat-state"),
+        el.getAttribute("data-state"),
+      ]
+        .filter((v): v is string => !!v)
+        .map((v) => v.trim().toLowerCase());
 
-    const selected =
-      el.getAttribute("aria-selected") === "true" ||
-      el.getAttribute("aria-checked") === "true" ||
-      el.getAttribute("aria-pressed") === "true" ||
-      el.getAttribute("data-seat-state") === "selected" ||
-      el.getAttribute("data-seat-status") === "selected" ||
-      el.getAttribute("data-state") === "selected" ||
-      el.getAttribute("data-selected") === "true" ||
-      el.getAttribute("data-seat-selected") === "true" ||
-      el.classList.contains("selected") ||
-      el.classList.contains("is-selected") ||
-      (!/\b(unselected|not selected|deselected)\b/i.test(aria) &&
-        /\bselected\b/i.test(aria));
+      const classAttr = el.getAttribute("class") || "";
 
-    const rawCategory = (
-      el.getAttribute("data-category") ||
-      el.getAttribute("data-seat-category") ||
-      el.getAttribute("data-tier") ||
-      ""
-    )
-      .trim()
-      .toLowerCase();
-    const category = knownCategories.has(rawCategory)
-      ? (rawCategory as SeatCategory)
-      : undefined;
+      const unavailable =
+        el.hasAttribute("disabled") ||
+        el.getAttribute("aria-disabled") === "true" ||
+        el.getAttribute("data-seat-disabled") === "true" ||
+        el.getAttribute("data-disabled") === "true" ||
+        el.getAttribute("data-available") === "false" ||
+        el.getAttribute("data-seat-readonly") === "true" ||
+        hasClassKeyword(classAttr, unavailableClassWords) ||
+        /\b(occupied|booked|sold|unavailable|blocked|reserved|locked|taken)\b/i.test(
+          `${aria} ${title}`,
+        ) ||
+        statusAttrs.some((s) => unavailableStates.has(s));
 
-    result.push({
-      id: token,
-      token,
-      row,
-      number,
-      label,
-      status: unavailable ? "occupied" : "available",
-      selected,
-      category,
-      x: box.x,
-      y: box.y,
-      width: box.width,
-    });
+      const selected =
+        el.getAttribute("aria-selected") === "true" ||
+        el.getAttribute("aria-checked") === "true" ||
+        el.getAttribute("aria-pressed") === "true" ||
+        el.getAttribute("data-seat-state") === "selected" ||
+        el.getAttribute("data-seat-status") === "selected" ||
+        el.getAttribute("data-state") === "selected" ||
+        el.getAttribute("data-selected") === "true" ||
+        el.getAttribute("data-seat-selected") === "true" ||
+        hasClassKeyword(classAttr, selectedClassWords) ||
+        (!/\b(unselected|not selected|deselected)\b/i.test(aria) &&
+          /\bselected\b/i.test(aria));
+
+      const rawCategory = (
+        el.getAttribute("data-category") ||
+        el.getAttribute("data-seat-category") ||
+        el.getAttribute("data-tier") ||
+        ""
+      )
+        .trim()
+        .toLowerCase();
+      const category = knownCategories.has(rawCategory)
+        ? (rawCategory as SeatCategory)
+        : undefined;
+
+      result.push({
+        id: token,
+        token,
+        row,
+        number,
+        label,
+        status: unavailable ? "occupied" : "available",
+        selected,
+        category,
+        x: box.x,
+        y: box.y,
+        width: box.width,
+      });
+    }
+  };
+
+  parseNodes(Array.from(document.querySelectorAll(selector)));
+
+  if (!result.length) {
+    const deepNodes: Element[] = [];
+    const visited = new Set<Document | ShadowRoot>();
+    const collectDeep = (root: Document | ShadowRoot) => {
+      if (visited.has(root)) return;
+      visited.add(root);
+      const all = root.querySelectorAll("*");
+      for (let i = 0; i < all.length; i++) {
+        const node = all[i];
+        const shadow = (node as HTMLElement).shadowRoot;
+        if (shadow) {
+          deepNodes.push(...Array.from(shadow.querySelectorAll(selector)));
+          collectDeep(shadow);
+        }
+        if (node.tagName === "IFRAME") {
+          try {
+            const doc = (node as HTMLIFrameElement).contentDocument;
+            if (doc) {
+              deepNodes.push(...Array.from(doc.querySelectorAll(selector)));
+              collectDeep(doc);
+            }
+          } catch {
+            /* ignore cross-origin iframe */
+          }
+        }
+      }
+    };
+    collectDeep(document);
+    if (deepNodes.length) parseNodes(deepNodes);
   }
+
   return result;
 }
