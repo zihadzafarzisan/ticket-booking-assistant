@@ -18,8 +18,27 @@ import type {
   ExtendedCandidate,
   ExtendedSnapshot,
   ExtendedTaskInput,
+  HandoffReason,
   PageRefreshState,
 } from "./types";
+
+const formatAwaitingUserReason = (reason?: HandoffReason): string => {
+  switch (reason) {
+    case "login_required":
+    case "captcha_required":
+      return "action needed in cinema browser (login, OTP, or CAPTCHA needed).";
+    case "exact_seats_unavailable":
+      return "Target seats unavailable — check browser or adjust seats.";
+    case "seat_stolen_mid_click":
+      return "Seat taken mid-click — partial selection cleared.";
+    case "checkout_blocked":
+      return "Checkout needs confirmation in browser.";
+    case "seat_map_not_ready":
+      return "Seat map not ready in browser.";
+    default:
+      return "action needed in cinema browser — your attention is needed.";
+  }
+};
 
 const statusLabels: Record<TaskStatus, string> = {
   queued: "Queued",
@@ -313,8 +332,13 @@ export default function App() {
                 });
               if (soundRef.current) playAlertChime("awaiting_payment");
             } else if (task.status === "awaiting_user") {
+              const handoffReason = (
+                task.results.find((r) => r.handoff?.status === "awaiting_user") ||
+                task.results.find((r) => r.handoff)
+              )?.handoff?.reason;
+              const reasonDetail = formatAwaitingUserReason(handoffReason);
               setToast({
-                message: `${task.input.movieName}: action needed in cinema browser (login, OTP, or CAPTCHA).`,
+                message: `${task.input.movieName}: ${reasonDetail}`,
                 error: true,
               });
               if (
@@ -322,7 +346,7 @@ export default function App() {
                 Notification.permission === "granted"
               )
                 new Notification("Cinema browser needs attention", {
-                  body: `Finish login, OTP, or checkout verification for ${task.input.movieName}.`,
+                  body: `${task.input.movieName}: ${reasonDetail}`,
                 });
               if (soundRef.current) playAlertChime("awaiting_user");
             } else if (task.status === "error") {
@@ -1115,6 +1139,18 @@ export default function App() {
                       .join(", ") || "Any time"}
                   </strong>
                 </div>
+                {selected.input.preferredHall && (
+                  <div data-testid="mission-spec-hall">
+                    <span>PREFERRED HALL</span>
+                    <strong>{selected.input.preferredHall}</strong>
+                  </div>
+                )}
+                {selected.input.preferredShowtime && (
+                  <div data-testid="mission-spec-showtime">
+                    <span>EXACT SHOWTIME</span>
+                    <strong>{selected.input.preferredShowtime}</strong>
+                  </div>
+                )}
                 <div>
                   <span>CHECKS</span>
                   <strong>
@@ -1258,6 +1294,12 @@ export default function App() {
                           {resolveBranchNames(selected.input.locationIds)}
                         </strong>
                         <small>
+                          {selected.input.preferredHall
+                            ? `${selected.input.preferredHall} · `
+                            : ""}
+                          {selected.input.preferredShowtime
+                            ? `${selected.input.preferredShowtime} · `
+                            : ""}
                           {selected.input.preferredCategory !== "any"
                             ? `${selected.input.preferredCategory} tier · `
                             : ""}
@@ -1382,8 +1424,9 @@ export default function App() {
                   <div>
                     <strong>Armed and ready.</strong>
                     <span>
-                      Monitoring begins{" "}
-                      {new Date(selected.input.scheduledAt!).toLocaleString()}.
+                      {selected.input.scheduledAt
+                        ? `Monitoring begins ${new Date(selected.input.scheduledAt).toLocaleString()}. `
+                        : "Scheduled. "}
                       Keep the bot service running.
                     </span>
                   </div>

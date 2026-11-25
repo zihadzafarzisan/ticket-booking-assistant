@@ -2,59 +2,31 @@ import type {
   BotTask,
   Candidate,
   Handoff,
+  HandoffReason,
+  PageRefreshResult,
+  PageRefreshState,
   Snapshot,
   TaskInput,
+  TaskRecord,
 } from "../../bot/src/contracts";
 
-export type PageRefreshState =
-  | "idle"
-  | "warming"
-  | "refreshing"
-  | "drop_detected"
-  | "selecting"
-  | "handoff"
-  | "error";
-
-export type HandoffReason =
-  | "exact_seats_unavailable"
-  | "seat_stolen_mid_click"
-  | "login_required"
-  | "captcha_required"
-  | "checkout_blocked"
-  | "seat_map_not_ready";
-
-export type ExtendedTaskInput = TaskInput & {
-  targetSeats?: string[];
-  exactSeatsOnly?: boolean;
-  refreshBrowserPage?: boolean;
-  preferredHall?: string;
-  preferredShowtime?: string;
+export type {
+  BotTask,
+  Candidate,
+  Handoff,
+  HandoffReason,
+  PageRefreshResult,
+  PageRefreshState,
+  Snapshot,
+  TaskInput,
+  TaskRecord,
 };
 
-export type ExtendedHandoff = Handoff & {
-  retryable?: boolean;
-  reason?: HandoffReason;
-};
-
-export type ExtendedCandidate = Omit<Candidate, "handoff"> & {
-  handoff?: ExtendedHandoff;
-};
-
-export type ExtendedBotTask = Omit<BotTask, "input" | "results"> & {
-  input: ExtendedTaskInput;
-  results: ExtendedCandidate[];
-  lastCheckLatencyMs?: number;
-  pageRefreshCount?: number;
-  lastPageRefreshAt?: string;
-  pageRefreshState?: PageRefreshState;
-  dropDetectedAt?: string;
-  consecutiveErrors?: number;
-  lastPageUrl?: string;
-};
-
-export type ExtendedSnapshot = Omit<Snapshot, "tasks"> & {
-  tasks: ExtendedBotTask[];
-};
+export type ExtendedTaskInput = TaskInput;
+export type ExtendedHandoff = Handoff;
+export type ExtendedCandidate = Candidate;
+export type ExtendedBotTask = BotTask;
+export type ExtendedSnapshot = Snapshot;
 
 export const SEAT_ROWS = [
   "A",
@@ -76,8 +48,10 @@ export const SEAT_ROWS = [
 ] as const;
 
 export const SEAT_COLUMNS = [
-  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
 ] as const;
+
+export const SEAT_PICKER_COLS = SEAT_COLUMNS;
 
 export const SEAT_CATEGORY_OPTIONS: ReadonlyArray<{
   value: TaskInput["preferredCategory"];
@@ -95,17 +69,29 @@ export const SEAT_CATEGORY_OPTIONS: ReadonlyArray<{
 ];
 
 export function normalizeSeatLabel(raw: string): string | null {
-  const cleaned = raw.trim().toUpperCase().replace(/[\s_-]+/g, "");
-  const match = /^([A-Z]{1,3})0*([1-9]\d{0,2})$/.exec(cleaned);
+  if (typeof raw !== "string") return null;
+  const match = /^([A-Z]{1,3})[\s_-]*0*([1-9]\d{0,2})$/.exec(
+    raw.trim().toUpperCase(),
+  );
   if (!match) return null;
   return `${match[1]}${match[2]}`;
 }
 
 export function parseTargetSeatsInput(raw: string): string[] {
-  const tokens = raw
-    .split(/[\s,;]+/)
-    .map((part) => normalizeSeatLabel(part))
-    .filter((label): label is string => label !== null);
+  const tokens: string[] = [];
+  for (const segment of raw.split(/[,;\n]+/)) {
+    const trimmed = segment.trim();
+    if (!trimmed) continue;
+    const whole = normalizeSeatLabel(trimmed);
+    if (whole) {
+      tokens.push(whole);
+      continue;
+    }
+    for (const part of trimmed.split(/\s+/)) {
+      const normalized = normalizeSeatLabel(part);
+      if (normalized) tokens.push(normalized);
+    }
+  }
   return [...new Set(tokens)].slice(0, 50);
 }
 

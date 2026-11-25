@@ -69,10 +69,19 @@ export default function TaskForm({
     openPaymentGateway: true,
     targetSeats: [],
     exactSeatsOnly: false,
+    preferredHall: "",
+    preferredShowtime: "",
     refreshBrowserPage:
       initial?.refreshBrowserPage ??
       (initialMode === "monitor" && initialSource === "live"),
     ...initial,
+    ...(initial
+      ? {
+          exactSeatsOnly: Boolean(
+            initial.targetSeats?.length && initial.exactSeatsOnly,
+          ),
+        }
+      : {}),
   });
   const [seatCountText, setSeatCountText] = useState(() =>
     String(initial?.requiredSeats ?? 2),
@@ -123,6 +132,8 @@ export default function TaskForm({
           "source",
           "locationIds",
           "preferredTimes",
+          "preferredHall",
+          "preferredShowtime",
           "strategy",
         ].includes(key as string)
           ? { targetShowId: undefined }
@@ -173,7 +184,9 @@ export default function TaskForm({
     setForm((prev) => ({
       ...prev,
       targetSeats: seats,
-      ...(seats.length > 0 ? { requiredSeats: seats.length } : {}),
+      ...(seats.length > 0
+        ? { requiredSeats: seats.length }
+        : { exactSeatsOnly: false }),
     }));
     if (seats.length > 0) {
       setSeatCountText(String(seats.length));
@@ -183,14 +196,15 @@ export default function TaskForm({
   const handleExactSeatsOnlyChange = (exactOnly: boolean) => {
     setForm((prev) => {
       const targetCount = prev.targetSeats?.length ?? 0;
+      const nextExact = targetCount > 0 ? exactOnly : false;
       const shouldClamp =
-        exactOnly && targetCount > 0 && prev.requiredSeats > targetCount;
+        nextExact && targetCount > 0 && prev.requiredSeats > targetCount;
       if (shouldClamp) {
         setSeatCountText(String(targetCount));
       }
       return {
         ...prev,
-        exactSeatsOnly: exactOnly,
+        exactSeatsOnly: nextExact,
         ...(shouldClamp ? { requiredSeats: targetCount } : {}),
       };
     });
@@ -214,11 +228,8 @@ export default function TaskForm({
       return;
     }
     const targetSeats = form.targetSeats?.length ? form.targetSeats : undefined;
-    if (
-      form.exactSeatsOnly &&
-      targetSeats &&
-      targetSeats.length < parsedCount
-    ) {
+    const exactSeatsOnly = Boolean(targetSeats && form.exactSeatsOnly);
+    if (exactSeatsOnly && targetSeats && targetSeats.length < parsedCount) {
       setError(
         `Exact seats only requires at least ${parsedCount} selected seat${parsedCount === 1 ? "" : "s"}.`,
       );
@@ -237,8 +248,10 @@ export default function TaskForm({
         ...form,
         requiredSeats: parsedCount,
         targetSeats,
-        exactSeatsOnly: Boolean(form.exactSeatsOnly),
+        exactSeatsOnly,
         refreshBrowserPage: Boolean(form.refreshBrowserPage),
+        preferredHall: form.preferredHall?.trim() || undefined,
+        preferredShowtime: form.preferredShowtime?.trim() || undefined,
         scheduledAt,
       });
     } catch (err) {
@@ -433,6 +446,28 @@ export default function TaskForm({
             onRowsChange={(rows) => update("allowedRows", rows)}
             onTimesChange={(times) => update("preferredTimes", times)}
           />
+          <div className="form-row">
+            <label className="field">
+              Preferred hall <span className="muted">(optional)</span>
+              <input
+                data-testid="preferred-hall-input"
+                type="text"
+                maxLength={100}
+                placeholder="IMAX, VIP, Hall 1 (optional)"
+                value={form.preferredHall ?? ""}
+                onChange={(e) => update("preferredHall", e.target.value)}
+              />
+            </label>
+            <label className="field">
+              Exact showtime <span className="muted">(optional · 24h)</span>
+              <input
+                data-testid="preferred-showtime-input"
+                type="time"
+                value={form.preferredShowtime ?? ""}
+                onChange={(e) => update("preferredShowtime", e.target.value)}
+              />
+            </label>
+          </div>
           <ExactSeatPicker
             targetSeats={form.targetSeats || []}
             exactSeatsOnly={Boolean(form.exactSeatsOnly)}

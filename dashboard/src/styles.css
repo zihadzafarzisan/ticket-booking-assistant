@@ -1205,7 +1205,7 @@ h1 {
 }
 .mission-specs {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(115px, 1fr));
   border: 1px solid #2e353c;
   background: #161b20;
   border-radius: 10px;
@@ -4163,9 +4163,12 @@ h1 {
   color: #7d8a96;
   font-weight: 600;
 }
-.seat-picker-scroll {
+.seat-picker-scroll,
+.seat-picker-grid-wrap {
   max-height: 215px;
+  max-width: 100%;
   overflow: auto;
+  -webkit-overflow-scrolling: touch;
   padding: 2px 2px 4px;
 }
 .seat-picker-grid {
@@ -4253,6 +4256,13 @@ h1 {
 }
 .sniper-toggles .check-row {
   margin-bottom: 0;
+}
+.check-row.is-disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+.check-row.is-disabled input:disabled {
+  cursor: not-allowed;
 }
 .toggle-warn {
   color: #e4a96b !important;
