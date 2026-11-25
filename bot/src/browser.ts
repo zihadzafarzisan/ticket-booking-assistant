@@ -596,8 +596,8 @@ export class BrowserDriver implements BrowserPort {
     }
 
     // Reuse pre-warmed watch tab if it is already pointing at this show.
+    const watch = this.watchPages.get(taskId);
     if (!page || page.isClosed()) {
-      const watch = this.watchPages.get(taskId);
       if (
         watch &&
         !watch.isClosed() &&
@@ -611,12 +611,63 @@ export class BrowserDriver implements BrowserPort {
         this.pages.set(key, page);
       }
     }
+    const isWatchPage = !!watch && page === watch;
     this.preparePage(page);
 
     signal.throwIfAborted();
     await page.bringToFront();
     if (!page.url().includes(`/shows/${show.id}/seats`)) {
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    } else {
+      const seatsVisible = await page
+        .locator(SEAT_DOM_SELECTOR)
+        .first()
+        .isVisible()
+        .catch(() => false);
+      const loginVisible = await page
+        .locator(
+          'input[type="password"], input[autocomplete="one-time-code"], input[name*="otp" i], iframe[src*="recaptcha"], iframe[src*="hcaptcha"], iframe[src*="challenges.cloudflare.com"], [data-sitekey]',
+        )
+        .first()
+        .isVisible()
+        .catch(() => false);
+      let needsReload = !seatsVisible && !loginVisible;
+      if (!needsReload && isWatchPage && seatsVisible) {
+        // Reload once if the warmed tab still holds a pre-reopen DOM without available target/required seats.
+        const cachedSeats = await page.evaluate(readLiveSeats).catch(() => []);
+        const avail = cachedSeats.filter((s) => s.status === "available");
+        const availSet = new Set(avail.map((s) => s.label));
+        const readyInDom = targetSeats.length
+          ? exactOnly
+            ? targetSeats.every((l) => availSet.has(l))
+            : targetSeats.every((l) => availSet.has(l)) ||
+              avail.length >= input.requiredSeats
+          : avail.length >= input.requiredSeats;
+        if (!readyInDom) needsReload = true;
+      }
+      if (needsReload) {
+        signal.throwIfAborted();
+        const reloadRes = await page
+          .reload({ waitUntil: "domcontentloaded", timeout: 15_000 })
+          .catch((err) => {
+            if (signal.aborted) throw err;
+            return undefined;
+          });
+        if (
+          input.mode === "monitor" &&
+          reloadRes &&
+          reloadRes.status() >= 500
+        ) {
+          return {
+            status: "awaiting_user",
+            message: `Cineplex seat page returned HTTP ${reloadRes.status()}. Retrying.`,
+            url: page.url(),
+            selectedSeats: [],
+            retryable: true,
+            reason: "seat_map_not_ready",
+          };
+        }
+      }
     }
     signal.throwIfAborted();
 
@@ -667,14 +718,17 @@ export class BrowserDriver implements BrowserPort {
     try {
       await page.waitForSelector(SEAT_DOM_SELECTOR, {
         state: "visible",
-        timeout: 12_000,
+        timeout: input.mode === "monitor" ? 6_000 : 12_000,
       });
     } catch {
       signal.throwIfAborted();
       return userHandoff(
         "The seat map is not ready. Complete any login step in the browser, then retry selection.",
         [],
-        { reason: "seat_map_not_ready" },
+        {
+          retryable: input.mode === "monitor",
+          reason: "seat_map_not_ready",
+        },
       );
     }
     signal.throwIfAborted();
